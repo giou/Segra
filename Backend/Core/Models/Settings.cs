@@ -1234,7 +1234,8 @@ namespace Segra.Backend.Core.Models
     {
         Auto,
         DXGI,
-        WGC
+        WGC,
+        GameCaptureOnly
     }
 
     [JsonConverter(typeof(JsonStringEnumConverter))]
