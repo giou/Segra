@@ -87,6 +87,18 @@ namespace Segra.Backend.Recorder
         private static System.Threading.Timer? _gameCaptureHookTimeoutTimer = null;
         private static bool _isStillHookedAfterUnhook = false;
 
+        // Deferred start state for GameCaptureOnly mode — outputs are configured but not started
+        // until the game capture fires its Hooked event.
+        private sealed record DeferredGameCaptureStart(
+            string GameName,
+            string FileName,
+            string ExePath,
+            int? Pid,
+            string? VideoOutputPath,
+            List<string> AudioTrackNames
+        );
+        private static DeferredGameCaptureStart? _pendingDeferredStart = null;
+
         // Periodic low-disk-space monitor while recording
         private static System.Threading.Timer? _diskSpaceMonitorTimer = null;
         private const int DiskSpaceCheckIntervalMs = 60000; // 1 minute
@@ -1074,6 +1086,22 @@ namespace Segra.Backend.Recorder
             // Overwrite the file name with the hooked executable name if using game hook
             fileName = _hookedExecutableFileName ?? fileName;
 
+            // GameCaptureOnly + automatic detection: defer output start until game capture hooks.
+            // Outputs and encoders are already configured — just wait for the Hooked event.
+            if (!startManually && Settings.Instance.DisplayCaptureMethod == DisplayCaptureMethod.GameCaptureOnly)
+            {
+                _pendingDeferredStart = new DeferredGameCaptureStart(
+                    name,
+                    fileName,
+                    exePath,
+                    pid,
+                    videoOutputPath,
+                    actualAudioTrackNames
+                );
+                Log.Information("GameCaptureOnly: deferred output start until game capture hooks");
+                return true;
+            }
+
             DateTime? startTime = null;
             bool hasPlayedStartSound = false;
 
@@ -1353,6 +1381,16 @@ namespace Segra.Backend.Recorder
                 // Mark as stopping to prevent concurrent stop attempts
                 _isStoppingOrStopped = true;
 
+                // If a GameCaptureOnly deferred start is pending, just clean up —
+                // outputs were never started so there's nothing to stop.
+                if (_pendingDeferredStart != null)
+                {
+                    Log.Information("StopRecording: cleaning up deferred start that never finalized");
+                    CleanupDeferredStart();
+                    _isStoppingOrStopped = false;
+                    return;
+                }
+
                 GeneralUtils.SetProcessPriority(ProcessPriorityClass.Normal);
 
                 RecordingPreviewService.OnRecordingStopped();
@@ -1631,6 +1669,12 @@ namespace Segra.Backend.Recorder
 
                 Log.Information($"Game hooked: Title='{title}', Class='{windowClass}', Executable='{executable}'");
 
+                // If we deferred the output start (GameCaptureOnly mode), finalize it now
+                if (_pendingDeferredStart != null)
+                {
+                    FinalizeDeferredRecordingStart();
+                }
+
                 // Remove display capture to save resources while game is hooked
                 DisposeDisplaySource();
 
@@ -1662,6 +1706,111 @@ namespace Segra.Backend.Recorder
             {
                 Log.Error(ex, "Error processing OnGameCaptureHookedEvent");
             }
+        }
+
+        /// <summary>
+        /// Starts the pre-configured outputs and publishes recording state.
+        /// Called from OnGameCaptureHookedEvent when GameCaptureOnly deferred the start.
+        /// </summary>
+        private static void FinalizeDeferredRecordingStart()
+        {
+            var state = _pendingDeferredStart!;
+            _pendingDeferredStart = null;
+
+            var eff = _activeEffectiveSettings!;
+            bool isReplayBufferMode = eff.RecordingMode == RecordingMode.Buffer;
+            bool isSessionMode = eff.RecordingMode == RecordingMode.Session;
+            bool isHybridMode = eff.RecordingMode == RecordingMode.Hybrid;
+
+            Log.Information($"Finalizing deferred recording start: '{state.GameName}' (mode={eff.RecordingMode})");
+
+            DateTime startTime = DateTime.Now;
+            bool hasPlayedStartSound = false;
+
+            if (_output != null)
+            {
+                if (!_output.Start())
+                {
+                    string error = _output.LastError ?? "Unknown error";
+                    Log.Error($"Deferred recording start failed: {error}");
+                    Task.Run(() => ShowModal("Recording failed", "Failed to start recording after game capture hooked. Check the log for more details.", "error"));
+                    Task.Run(() => PlaySound("error"));
+                    CleanupDeferredStart();
+                    return;
+                }
+
+                _ = Task.Run(() => PlaySound("start"));
+                hasPlayedStartSound = true;
+                Log.Information("Deferred session recording started successfully");
+            }
+
+            if (_bufferOutput != null)
+            {
+                if (!_bufferOutput.Start())
+                {
+                    string error = _bufferOutput.LastError ?? "Unknown error";
+                    Log.Error($"Deferred replay buffer start failed: {error}");
+                    Task.Run(() => ShowModal("Replay buffer failed", "Failed to start replay buffer after game capture hooked. Check the log for more details.", "error"));
+                    Task.Run(() => PlaySound("error"));
+                    CleanupDeferredStart();
+                    return;
+                }
+
+                if (!hasPlayedStartSound)
+                {
+                    _ = Task.Run(() => PlaySound("start"));
+                    hasPlayedStartSound = true;
+                }
+
+                Log.Information("Deferred replay buffer started successfully");
+            }
+
+            AppState.Instance.Recording = new Recording()
+            {
+                StartTime = startTime,
+                Game = state.GameName,
+                FilePath = state.VideoOutputPath,
+                FileName = state.FileName,
+                Pid = state.Pid,
+                IsUsingGameHook = true,
+                ExePath = state.ExePath,
+                CoverImageId = GameUtils.GetCoverImageIdFromExePath(state.ExePath),
+                AudioTrackNames = state.AudioTrackNames
+            };
+            AppState.Instance.PreRecording = null;
+            _ = MessageService.SendStateToFrontend("OBS Start recording (GameCaptureOnly deferred)");
+
+            RecordingPreviewService.OnRecordingStarted((uint)eff.FrameRate);
+            NotifyIconService.SetNotifyIconStatus(NotifyIconState.Recording);
+            StartDiskSpaceMonitor();
+
+            Log.Information($"Deferred recording finalized: {state.VideoOutputPath}");
+            GeneralUtils.SetProcessPriority(ProcessPriorityClass.High);
+            if (!isReplayBufferMode)
+            {
+                _ = GameIntegrationService.Start(GameUtils.GetIgdbIdFromExePath(state.ExePath), GameUtils.GetGameNameFromExePath(state.ExePath), state.ExePath);
+            }
+        }
+
+        /// <summary>
+        /// Cleans up a deferred start that never got finalized (game capture never hooked, or output start failed).
+        /// </summary>
+        private static void CleanupDeferredStart()
+        {
+            _pendingDeferredStart = null;
+            AppState.Instance.PreRecording = null;
+            _activeEffectiveSettings = null;
+            _isHdrRecording = false;
+            _hdrEncoderId = null;
+            _hookedExecutableFileName = null;
+            CapturedWindowWidth = null;
+            CapturedWindowHeight = null;
+            StopGameCaptureHookTimeoutTimer();
+            StopDiskSpaceMonitor();
+            DisposeOutput();
+            DisposeSources();
+            DisposeEncoders();
+            _isStoppingOrStopped = false;
         }
 
 
@@ -2193,6 +2342,15 @@ namespace Segra.Backend.Recorder
             // Check if game capture has hooked
             if (!IsGameCaptureHooked)
             {
+                // If we deferred the output start (GameCaptureOnly), clean up without
+                // ever having written a frame to disk.
+                if (_pendingDeferredStart != null)
+                {
+                    Log.Warning("Game capture did not hook within 90 seconds (GameCaptureOnly). Cleaning up deferred start.");
+                    CleanupDeferredStart();
+                    return;
+                }
+
                 Log.Warning("Game capture did not hook within 90 seconds. Removing game capture source.");
                 DisposeGameCaptureSource();
             }
