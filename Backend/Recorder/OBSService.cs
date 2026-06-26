@@ -671,8 +671,12 @@ namespace Segra.Backend.Recorder
             }
             else
             {
-                // Add display capture first (bottom layer - fallback)
-                AddMonitorCapture();
+                // For GameCaptureOnly, skip display capture — only record once game capture hooks
+                if (Settings.Instance.DisplayCaptureMethod != DisplayCaptureMethod.GameCaptureOnly)
+                {
+                    // Add display capture first (bottom layer - fallback)
+                    AddMonitorCapture();
+                }
 
                 // Create game capture source for automatic game detection
                 try

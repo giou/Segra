@@ -474,6 +474,7 @@ export default function VideoSettingsSection({
               { value: 'Auto', label: 'Auto' },
               { value: 'DXGI', label: 'DXGI (Desktop Duplication)' },
               { value: 'WGC', label: 'WGC (Windows Graphics Capture)' },
+              { value: 'GameCaptureOnly', label: 'Game Capture only' },
             ]}
             value={settings.displayCaptureMethod}
             onChange={(val) =>

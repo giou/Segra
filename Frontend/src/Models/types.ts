@@ -2,7 +2,7 @@ export type ContentType = 'Session' | 'Buffer' | 'Clip' | 'Highlight';
 
 export type RecordingMode = 'Session' | 'Buffer' | 'Hybrid';
 
-export type DisplayCaptureMethod = 'Auto' | 'DXGI' | 'WGC';
+export type DisplayCaptureMethod = 'Auto' | 'DXGI' | 'WGC' | 'GameCaptureOnly';
 
 export type AudioOutputMode = 'All' | 'GameOnly' | 'GameAndDiscord';
 
