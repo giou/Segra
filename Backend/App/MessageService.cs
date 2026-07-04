@@ -97,6 +97,10 @@ namespace Segra.Backend.App
                             root.TryGetProperty("Parameters", out JsonElement aiClipParameterElement);
                             _ = Task.Run(() => HandleCreateAiClip(aiClipParameterElement));
                             break;
+                        case "CreateLowlight":
+                            root.TryGetProperty("Parameters", out JsonElement lowlightParameterElement);
+                            _ = Task.Run(() => HandleCreateLowlight(lowlightParameterElement));
+                            break;
                         case "CompressVideo":
                             root.TryGetProperty("Parameters", out JsonElement compressParameterElement);
                             _ = Task.Run(() => HandleCompressVideo(compressParameterElement));
@@ -315,6 +319,100 @@ namespace Segra.Backend.App
             {
                 Log.Error($"Unhandled exception in message handler: {ex.Message}");
                 Log.Error($"Stack trace: {ex.StackTrace}");
+            }
+        }
+        private static async Task HandleCreateAiClip(JsonElement message)
+        {
+            Log.Information($"{message}");
+            message.TryGetProperty("FileName", out JsonElement fileNameElement);
+            await AiService.CreateHighlight(fileNameElement.GetString()!);
+        }
+
+        private static async Task HandleCreateLowlight(JsonElement message)
+        {
+            Log.Information($"{message}");
+            message.TryGetProperty("FileName", out JsonElement fileNameElement);
+            await AiService.CreateLowlight(fileNameElement.GetString()!);
+        }
+
+        private static async Task HandleCompressVideo(JsonElement message)
+        {
+            Log.Information($"CompressVideo: {message}");
+            message.TryGetProperty("FilePath", out JsonElement filePathElement);
+            await CompressionService.CompressVideo(filePathElement.GetString()!);
+        }
+
+        private static async Task HandleCreateClip(JsonElement message)
+        {
+            Log.Information($"{message}");
+
+            if (message.TryGetProperty("Segments", out JsonElement segmentsElement))
+            {
+                var segments = new List<Segment>();
+                foreach (var segmentElement in segmentsElement.EnumerateArray())
+                {
+                    if (segmentElement.TryGetProperty("id", out JsonElement idElement) &&
+                        segmentElement.TryGetProperty("startTime", out JsonElement startTimeElement) &&
+                        segmentElement.TryGetProperty("endTime", out JsonElement endTimeElement) &&
+                        segmentElement.TryGetProperty("fileName", out JsonElement fileNameElement) &&
+                        segmentElement.TryGetProperty("type", out JsonElement videoTypeElement) &&
+                        segmentElement.TryGetProperty("game", out JsonElement gameElement) &&
+                        segmentElement.TryGetProperty("title", out JsonElement titleElement))
+                    {
+                        long id = idElement.GetInt64();
+                        double startTime = startTimeElement.GetDouble();
+                        double endTime = endTimeElement.GetDouble();
+                        string fileName = fileNameElement.GetString()!;
+                        string type = videoTypeElement.GetString()!;
+                        string game = gameElement.GetString()!;
+                        string title = titleElement.GetString() ?? string.Empty;
+                        int? igdbId = segmentElement.TryGetProperty("igdbId", out JsonElement igdbIdElement) && igdbIdElement.ValueKind == JsonValueKind.Number
+                            ? igdbIdElement.GetInt32()
+                            : null;
+                        string? filePath = segmentElement.TryGetProperty("filePath", out JsonElement filePathElement)
+                            ? filePathElement.GetString()
+                            : null;
+                        List<int>? mutedAudioTracks = null;
+                        if (segmentElement.TryGetProperty("mutedAudioTracks", out JsonElement mutedEl)
+                            && mutedEl.ValueKind == JsonValueKind.Array)
+                        {
+                            mutedAudioTracks = mutedEl.EnumerateArray().Select(e => e.GetInt32()).ToList();
+                        }
+                        Dictionary<int, double>? audioTrackVolumes = null;
+                        if (segmentElement.TryGetProperty("audioTrackVolumes", out JsonElement volEl)
+                            && volEl.ValueKind == JsonValueKind.Object)
+                        {
+                            audioTrackVolumes = new Dictionary<int, double>();
+                            foreach (var prop in volEl.EnumerateObject())
+                            {
+                                if (int.TryParse(prop.Name, out int trackIdx) && prop.Value.TryGetDouble(out double vol))
+                                    audioTrackVolumes[trackIdx] = vol;
+                            }
+                        }
+
+                        // Create a new Segment instance with all required properties.
+                        segments.Add(new Segment
+                        {
+                            Id = id,
+                            Type = type,
+                            StartTime = startTime,
+                            EndTime = endTime,
+                            FileName = fileName,
+                            FilePath = filePath,
+                            Game = game,
+                            Title = title,
+                            IgdbId = igdbId,
+                            MutedAudioTracks = mutedAudioTracks,
+                            AudioTrackVolumes = audioTrackVolumes
+                        });
+                    }
+                }
+
+                await ClipService.CreateClips(segments);
+            }
+            else
+            {
+                Log.Information("Segments property not found in CreateClip message.");
             }
         }
 
