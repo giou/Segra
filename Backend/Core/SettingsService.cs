@@ -689,8 +689,7 @@ namespace Segra.Backend.Core
                 hasChanges = true;
             }
 
-<<<<<<< HEAD:Backend/Core/SettingsService.cs
-=======
+
             // Update EnableLowlights
             if (settings.EnableLowlights != updatedSettings.EnableLowlights)
             {

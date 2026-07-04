@@ -273,8 +273,7 @@ namespace Segra.Backend.Recorder
             }
         }
 
-<<<<<<< HEAD:Backend/Recorder/RecoveryService.cs
-=======
+
         public static async Task CheckForOrphanedFilesAsync()
         {
             try
