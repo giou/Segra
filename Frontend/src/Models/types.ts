@@ -7,6 +7,7 @@ export type DisplayCaptureMethod = 'Auto' | 'DXGI' | 'WGC' | 'GameCaptureOnly';
 export type AudioOutputMode = 'All' | 'GameOnly' | 'GameAndDiscord';
 
 export type StartupWindowMode = 'Normal' | 'Minimized';
+export type CloseButtonAction = 'Minimize' | 'Exit';
 
 export interface Content {
   type: ContentType;
@@ -179,6 +180,8 @@ export interface GameSetting {
   qualityOverride: GameQualityOverride | null;
   recordingModeOverride: GameRecordingModeOverride | null;
   discardSessionsWithoutBookmarksOverride: boolean | null;
+  enableHdrOverride: boolean | null;
+  volumeOverride: number | null; // Multiplier on top of the configured device volume (0-2)
 }
 
 export interface GameIntegrationSettings {
@@ -228,11 +231,7 @@ export type Av1NvencPreset = 'p1' | 'p2' | 'p3' | 'p4' | 'p5' | 'p6' | 'p7';
 export type AmdClipPreset = 'quality' | 'transcoding' | 'lowlatency' | 'ultralowlatency';
 export type IntelClipPreset = 'fast' | 'medium' | 'slow';
 export type ClipPreset =
-  | CpuClipPreset
-  | NvidiaClipPreset
-  | Av1NvencPreset
-  | AmdClipPreset
-  | IntelClipPreset;
+  CpuClipPreset | NvidiaClipPreset | Av1NvencPreset | AmdClipPreset | IntelClipPreset;
 
 export type VideoQualityPreset = 'low' | 'standard' | 'high' | 'custom';
 export type ClipQualityPreset = 'low' | 'standard' | 'high' | 'custom';
@@ -303,6 +302,7 @@ export interface Settings {
   autoGenerateLowlights: boolean;
   runOnStartup: boolean;
   startupWindowMode: StartupWindowMode; // Window state when launched from startup
+  closeButtonAction: CloseButtonAction;
   receiveBetaUpdates: boolean;
   airplaneMode: boolean; // Hides cloud account/login/upload features and signs the user out
   recordingMode: RecordingMode;
@@ -386,6 +386,7 @@ export const initialSettings: Settings = {
   autoGenerateLowlights: true,
   runOnStartup: false,
   startupWindowMode: 'Minimized',
+  closeButtonAction: 'Minimize',
   receiveBetaUpdates: false,
   airplaneMode: false,
   recordingMode: 'Hybrid',

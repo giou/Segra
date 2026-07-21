@@ -9,7 +9,6 @@ using System.Diagnostics;
 using Segra.Backend.Shared;
 using Segra.Backend.Recorder;
 using Segra.Backend.Core.Models;
-using Segra.Backend.Windows.Input;
 using Segra.Backend.Windows.Power;
 using Segra.Backend.Windows.Storage;
 using Segra.Backend.Windows.GameMode;
@@ -261,10 +260,9 @@ namespace Segra.Backend.App
                 Task.Run(GameModeService.EnforceDisabledIfEnabled);
 
                 // Run the OBS Initializer in a separate thread and application to make sure someting on the main thread doesn't block
+                // (KeybindCaptureService.Start() is called from OBSService.InitializeAsync once OBS is
+                // ready, since hotkeys register through OBS's own hotkey system.)
                 Task.Run(() => Application.Run(new OBSWindow()));
-
-                // Global keybind hook (low-level keyboard hook + message loop) — runs for the lifetime of the app.
-                Task.Run(KeybindCaptureService.Start);
 
                 if (!startMinimized)
                 {
@@ -351,6 +349,8 @@ namespace Segra.Backend.App
         private static void Shutdown()
         {
             Log.Information("Application shutting down.");
+
+            SaveWindowState();
 
             // Stop any active recording first so OBS finalizes the file cleanly. Task.Run + block keeps
             // the awaits off the tray thread, whose WinForms SynchronizationContext would otherwise deadlock.
@@ -481,15 +481,25 @@ namespace Segra.Backend.App
                 Math.Min((int)(1280 * displayScale), GetSystemMetrics(SM_CXFULLSCREEN)),
                 Math.Min((int)(720 * displayScale), GetSystemMetrics(SM_CYFULLSCREEN)));
 
+            bool hasRestoredLocation = TryGetRestoredWindowLocation(out Point restoredLocation);
+
             // Initialize the PhotinoWindow
-            Window = new PhotinoWindow()
+            var windowBuilder = new PhotinoWindow()
                 .SetBrowserControlInitParameters("--enable-blink-features=AudioVideoTracks")
                 .SetNotificationsEnabled(false) // Disabled due to it creating a second start menu entry with incorrect start path. See https://github.com/tryphotino/photino.NET/issues/85
                 .SetUseOsDefaultSize(false)
                 .SetIconFile(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon.ico"))
                 .SetSize(windowSize)
-                .Center()
-                .SetResizable(true)
+                .SetResizable(true);
+
+            // Restore the window to the monitor it was last on instead of always centering on the primary display.
+            // UseOsDefaultLocation defaults to true, so it must be explicitly disabled or the native window
+            // ignores SetLocation and falls back to the OS default position (same reasoning as SetUseOsDefaultSize above).
+            windowBuilder = hasRestoredLocation
+                ? windowBuilder.SetUseOsDefaultLocation(false).SetLocation(restoredLocation)
+                : windowBuilder.Center();
+
+            Window = windowBuilder
                 .RegisterWebMessageReceivedHandler((sender, message) =>
                 {
                     Window = (PhotinoWindow)sender!;
@@ -504,11 +514,58 @@ namespace Segra.Backend.App
 
             Window.RegisterWindowClosingHandler((sender, eventArgs) =>
             {
+                if (Settings.Instance.CloseButtonAction == CloseButtonAction.Exit)
+                {
+                    Shutdown();
+                    Environment.Exit(0);
+                    return false;
+                }
+
+                SaveWindowState();
                 HideApplicationWindow();
                 return true;
             });
 
             Window.WaitForClose();
+        }
+
+        // Validates the saved location still lands on a currently connected monitor
+        // (e.g. the second monitor wasn't unplugged), falling back to centering otherwise.
+        private static bool TryGetRestoredWindowLocation(out Point location)
+        {
+            var saved = Settings.Instance.LastWindowState;
+            if (saved != null)
+            {
+                var savedLocation = new Point(saved.X, saved.Y);
+                if (Screen.AllScreens.Any(screen => screen.Bounds.Contains(savedLocation)))
+                {
+                    location = savedLocation;
+                    return true;
+                }
+            }
+
+            location = default;
+            return false;
+        }
+
+        private static void SaveWindowState()
+        {
+            if (Window == null || Window.Minimized) return;
+
+            try
+            {
+                Settings.Instance.LastWindowState = new WindowState
+                {
+                    X = Window.Location.X,
+                    Y = Window.Location.Y
+                };
+
+                SettingsService.SaveSettings();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error saving window state");
+            }
         }
 
         private static void StartNamedPipeServer()

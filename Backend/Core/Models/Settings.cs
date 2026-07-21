@@ -45,6 +45,7 @@ namespace Segra.Backend.Core.Models
         private bool _forceMonoInputSources = false;
         private Display? _selectedDisplay = null;
         private DisplayCaptureMethod _displayCaptureMethod = DisplayCaptureMethod.Auto;
+        private WindowState? _lastWindowState = null;
         private bool _enableAi = true;
         private bool _autoGenerateHighlights = true;
         private double _highlightPaddingBefore = 4;
@@ -55,6 +56,7 @@ namespace Segra.Backend.Core.Models
         private double _lowlightPaddingAfter = 4;
         private bool _runOnStartup = false;
         private StartupWindowMode _startupWindowMode = StartupWindowMode.Minimized;
+        private CloseButtonAction _closeButtonAction = CloseButtonAction.Minimize;
         private bool _receiveBetaUpdates = false;
         private bool _airplaneMode = false;
         private RecordingMode _recordingMode = RecordingMode.Hybrid;
@@ -366,6 +368,17 @@ namespace Segra.Backend.Core.Models
             }
         }
 
+        // Last known main-window position, restored on next launch. Backend-only.
+        [JsonPropertyName("lastWindowState")]
+        public WindowState? LastWindowState
+        {
+            get => _lastWindowState;
+            set
+            {
+                _lastWindowState = value;
+            }
+        }
+
         [JsonPropertyName("enableAi")]
         public bool EnableAi
         {
@@ -504,6 +517,19 @@ namespace Segra.Backend.Core.Models
                 if (_startupWindowMode != value)
                 {
                     _startupWindowMode = value;
+                }
+            }
+        }
+
+        [JsonPropertyName("closeButtonAction")]
+        public CloseButtonAction CloseButtonAction
+        {
+            get => _closeButtonAction;
+            set
+            {
+                if (_closeButtonAction != value)
+                {
+                    _closeButtonAction = value;
                 }
             }
         }
@@ -1288,6 +1314,13 @@ namespace Segra.Backend.Core.Models
     }
 
     [JsonConverter(typeof(JsonStringEnumConverter))]
+    public enum CloseButtonAction
+    {
+        Minimize,
+        Exit
+    }
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public enum DisplayCaptureMethod
     {
         Auto,
@@ -1374,6 +1407,14 @@ namespace Segra.Backend.Core.Models
 
         [JsonPropertyName("discardSessionsWithoutBookmarksOverride")]
         public bool? DiscardSessionsWithoutBookmarksOverride { get; set; }
+
+        [JsonPropertyName("enableHdrOverride")]
+        public bool? EnableHdrOverride { get; set; }
+
+        // Multiplier applied on top of the configured device volume for this game's captured
+        // audio (desktop/game capture), independent of the player's own in-game/OS volume.
+        [JsonPropertyName("volumeOverride")]
+        public float? VolumeOverride { get; set; }
     }
 
     // Mirrors the global video quality settings. When Preset is "low"/"standard"/"high" the concrete
