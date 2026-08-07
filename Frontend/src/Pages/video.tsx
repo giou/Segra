@@ -7,7 +7,6 @@ import { openFileLocation } from '../Utils/FileUtils';
 import { useSelectedVideo } from '../Context/SelectedVideoContext';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { useAuth } from '../Hooks/useAuth.tsx';
 import { useSegments } from '../Context/SegmentsContext';
 import { useUploads } from '../Context/UploadContext';
 import { useModal } from '../Context/ModalContext';
@@ -50,6 +49,7 @@ import { useAudioTracks } from '../Hooks/useAudioTracks';
 import { AnimatePresence, motion } from 'framer-motion';
 import Button from '../Components/Button';
 import { SECTION_ID_BY_CONTENT_TYPE, filterAndSortForSection } from '../Components/SectionView';
+import { useDeleteConfirmation } from '../Hooks/useDeleteConfirmation';
 
 const Crosshair2Dot = React.forwardRef<SVGSVGElement, React.ComponentProps<typeof Icon>>(
   (props, ref) => <Icon {...props} ref={ref} iconNode={crosshair2Dot} />,
@@ -199,10 +199,10 @@ export default function VideoComponent({ video }: { video: Content }) {
   const settings = useSettings();
   const appState = useAppState();
   const updateSettings = useSettingsUpdater();
-  const { session } = useAuth();
   const { uploads } = useUploads();
   const { openModal, closeModal } = useModal();
   const { setSelectedVideo } = useSelectedVideo();
+  const confirmDelete = useDeleteConfirmation();
   const {
     segments,
     addSegment,
@@ -1231,6 +1231,7 @@ export default function VideoComponent({ video }: { video: Content }) {
 
     const newSegment: Segment = {
       id: Date.now(),
+      contentId: video.id,
       type: video.type,
       startTime: start,
       endTime: end,
@@ -1269,14 +1270,9 @@ export default function VideoComponent({ video }: { video: Content }) {
       OutputMode: clipOutputMode,
       Segments: segments.map((s) => ({
         id: s.id,
-        type: s.type,
-        fileName: s.fileName,
-        filePath: s.filePath,
-        game: s.game,
-        title: s.title,
+        contentId: s.contentId,
         startTime: s.startTime,
         endTime: s.endTime,
-        igdbId: s.igdbId,
         mutedAudioTracks: s.mutedAudioTracks,
         audioTrackVolumes: s.audioTrackVolumes,
       })),
@@ -1561,7 +1557,7 @@ export default function VideoComponent({ video }: { video: Content }) {
           : video.type === 'Clip'
             ? 'Clips'
             : 'Highlights';
-    const waveformPath = `${appState.cacheFolder}/waveforms/${folderName}/${video.fileName}.peaks.json`;
+    const waveformPath = `${appState.cacheFolder}/waveforms/${folderName}/${video.id}.peaks.json`;
     return `http://localhost:2222/api/content?input=${encodeURIComponent(waveformPath)}&type=${video.type.toLowerCase()}`;
   };
 
@@ -1579,13 +1575,10 @@ export default function VideoComponent({ video }: { video: Content }) {
         onClose={closeModal}
         onUpload={(title, description, visibility) => {
           const parameters = {
-            FilePath: video.filePath,
-            JWT: session?.access_token,
-            Game: video.game,
+            Id: video.id,
             Title: title,
             Description: description,
             Visibility: visibility,
-            IgdbId: video.igdbId?.toString(),
           };
 
           sendMessageToBackend('UploadContent', parameters);
@@ -1667,10 +1660,9 @@ export default function VideoComponent({ video }: { video: Content }) {
 
     // Send message to backend to add bookmark
     sendMessageToBackend('AddBookmark', {
-      FilePath: video.filePath,
+      ContentId: video.id,
       Type: bookmarkType,
       Time: formattedTime,
-      ContentType: video.type,
       Id: bookmarkId,
     });
   };
@@ -1680,20 +1672,42 @@ export default function VideoComponent({ video }: { video: Content }) {
     const bookmarkIndex = video.bookmarks.findIndex((b) => b.id === bookmarkId);
 
     if (bookmarkIndex !== -1) {
-      // Remove the bookmark from the array
-      video.bookmarks.splice(bookmarkIndex, 1);
+      const bookmark = video.bookmarks[bookmarkIndex];
+      confirmDelete({
+        title: 'Delete bookmark?',
+        description: `Delete the ${bookmark.type.toLowerCase()} bookmark at ${bookmark.time}? This action cannot be undone.`,
+        onConfirm: () => {
+          video.bookmarks.splice(bookmarkIndex, 1);
 
-      // Force a re-render to update the UI
-      const bookmarks = [...video.bookmarks];
-      video.bookmarks = bookmarks;
+          const bookmarks = [...video.bookmarks];
+          video.bookmarks = bookmarks;
 
-      // Send message to backend to delete the bookmark
-      sendMessageToBackend('DeleteBookmark', {
-        FilePath: video.filePath,
-        ContentType: video.type,
-        Id: bookmarkId,
+          sendMessageToBackend('DeleteBookmark', {
+            ContentId: video.id,
+            Id: bookmarkId,
+          });
+        },
       });
     }
+  };
+
+  const handleDeleteSegment = (segmentId: number) => {
+    confirmDelete({
+      title: 'Delete segment?',
+      description: 'Remove this segment from the clip? This action cannot be undone.',
+      onConfirm: () => removeSegment(segmentId),
+    });
+  };
+
+  const handleClearSegments = () => {
+    if (segments.length === 0) return;
+
+    confirmDelete({
+      title: 'Delete all segments?',
+      description: `Remove all ${segments.length} ${segments.length === 1 ? 'segment' : 'segments'} from the clip? This action cannot be undone.`,
+      confirmText: 'Delete all',
+      onConfirm: clearAllSegments,
+    });
   };
 
   // Handle volume change
@@ -2128,7 +2142,7 @@ export default function VideoComponent({ video }: { video: Content }) {
                     onMouseDown={(e) => handleSegmentMouseDown(e, seg.id)}
                     onContextMenu={(e) => {
                       e.preventDefault();
-                      removeSegment(seg.id);
+                      handleDeleteSegment(seg.id);
                     }}
                   >
                     <div className="absolute left-0 top-0 h-full w-[4px] bg-accent/80 rounded-l-sm pointer-events-none" />
@@ -2558,7 +2572,7 @@ export default function VideoComponent({ video }: { video: Content }) {
                 variant="primary"
                 size="sm"
                 className="w-full h-10 py-0 hover:text-accent"
-                onClick={clearAllSegments}
+                onClick={handleClearSegments}
                 disabled={segments.length === 0}
               >
                 <Trash2 className="w-4 h-4" />

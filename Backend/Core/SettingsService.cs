@@ -5,11 +5,13 @@ using Segra.Backend.Media;
 using Segra.Backend.Shared;
 using Segra.Backend.Recorder;
 using Segra.Backend.Core.Models;
+using Segra.Backend.Platform;
 using Segra.Backend.Windows.Input;
-using Segra.Backend.Windows.Display;
 using Segra.Backend.Windows.Storage;
-using Segra.Backend.Windows.GameMode;
 using System.Text.Json.Serialization;
+#if WINDOWS
+using Segra.Backend.Windows.GameMode;
+#endif
 
 namespace Segra.Backend.Core
 {
@@ -154,7 +156,7 @@ namespace Segra.Backend.Core
                     }
                 }
 
-                Settings.Instance.RunOnStartup = StartupService.GetStartupStatus();
+                Settings.Instance.RunOnStartup = PlatformServices.Startup.GetStartupStatus();
                 AppState.Instance.GpuVendor = GeneralUtils.DetectGpuVendor();
 
                 Log.Information("Settings loaded from {0}", SettingsFilePath);
@@ -337,6 +339,13 @@ namespace Segra.Backend.Core
                 hasChanges = true;
             }
 
+            if (settings.ConfirmBeforeDeleting != updatedSettings.ConfirmBeforeDeleting)
+            {
+                Log.Information($"ConfirmBeforeDeleting changed from '{settings.ConfirmBeforeDeleting}' to '{updatedSettings.ConfirmBeforeDeleting}'");
+                settings.ConfirmBeforeDeleting = updatedSettings.ConfirmBeforeDeleting;
+                hasChanges = true;
+            }
+
             if (settings.RemoveOriginalAfterCompression != updatedSettings.RemoveOriginalAfterCompression)
             {
                 Log.Information($"RemoveOriginalAfterCompression changed from '{settings.RemoveOriginalAfterCompression}' to '{updatedSettings.RemoveOriginalAfterCompression}'");
@@ -358,7 +367,9 @@ namespace Segra.Backend.Core
                 // Enabling the option proactively disables Game Mode; disabling it leaves Game Mode untouched.
                 if (settings.DisableWindowsGameMode)
                 {
+#if WINDOWS
                     GameModeService.EnforceDisabledIfEnabled();
+#endif
                 }
                 hasChanges = true;
             }
@@ -822,8 +833,15 @@ namespace Segra.Backend.Core
             }
         }
 
-        public static async Task LoadContentFromFolderIntoState(bool sendToFrontend = true)
+        public static async Task LoadContentFromFolderIntoState(bool sendToFrontend = true, bool awaitMigrations = true)
         {
+            // Migrations rename metadata files while they backfill ids. Loading alongside them
+            // (e.g. from the WebSocket connect handler) could read files mid-rename; wait for the
+            // backfill to finish first. Migration-internal reloads pass awaitMigrations: false,
+            // since they run while the migration is still in progress.
+            if (awaitMigrations && MigrationService.IsRunning)
+                await MigrationService.WaitForMigrationsAsync();
+
             var contentTypes = Enum.GetValues(typeof(Content.ContentType)).Cast<Content.ContentType>().ToArray();
             var content = new List<Content>();
 
@@ -838,8 +856,10 @@ namespace Segra.Backend.Core
                         continue;
                     }
 
+                    // Materialized because the id backfill below can write a renamed metadata file into this folder
                     var metadataFiles = Directory.EnumerateFiles(metadataPath, "*.json", SearchOption.TopDirectoryOnly)
-                                                 .Where(file => IsMetadataFile(file));
+                                                 .Where(file => IsMetadataFile(file))
+                                                 .ToList();
 
                     foreach (var metadataFilePath in metadataFiles)
                     {
@@ -855,11 +875,17 @@ namespace Segra.Backend.Core
                                 continue;
                             }
 
+                            // Safety net for metadata that reached disk without an id
+                            if (ContentService.EnsureContentId(serializedMetadataFilePath, metadata))
+                            {
+                                Log.Information($"Assigned content id {metadata.Id} to {metadata.FilePath}");
+                            }
+
                             // Update FileSizeKb if it is 0 (migration, remove this in the future)
                             if (metadata.FileSizeKb == 0)
                             {
                                 Log.Information($"[MIGRATION] Adding FileSizeKb to {metadata.FilePath}");
-                                var updatedMetadata = await ContentService.UpdateMetadataFile(metadataFilePath, c =>
+                                var updatedMetadata = await ContentService.UpdateMetadataFile(FolderNames.GetMetadataFilePath(metadata.Type, metadata.Id), c =>
                                 {
                                     c.FileSizeKb = ContentService.GetFileSize(c.FilePath).sizeKb;
                                 });
@@ -870,23 +896,7 @@ namespace Segra.Backend.Core
                                 }
                             }
 
-                            content.Add(new Content
-                            {
-                                Type = metadata.Type,
-                                Title = metadata.Title,
-                                Game = metadata.Game,
-                                Bookmarks = metadata.Bookmarks,
-                                FileName = metadata.FileName,
-                                FilePath = metadata.FilePath,
-                                FileSize = metadata.FileSize,
-                                FileSizeKb = metadata.FileSizeKb,
-                                Duration = metadata.Duration,
-                                CreatedAt = metadata.CreatedAt,
-                                UploadId = metadata.UploadId,
-                                IgdbId = metadata.IgdbId,
-                                AudioTrackNames = metadata.AudioTrackNames,
-                                IsImported = metadata.IsImported
-                            });
+                            content.Add(metadata);
                         }
                         catch (Exception ex)
                         {
@@ -912,28 +922,15 @@ namespace Segra.Backend.Core
 
         public static void GetPrimaryMonitorResolution(out uint boundsWidth, out uint boundsHeight)
         {
-            // Try to get physical resolution (DPI-aware)
-            if (DisplayService.GetPrimaryMonitorPhysicalResolution(out boundsWidth, out boundsHeight))
+            if (PlatformServices.Display.GetPrimaryMonitorPhysicalResolution(out boundsWidth, out boundsHeight))
             {
-                if (Screen.PrimaryScreen != null)
-                {
-                    Log.Information($"Physical resolution: {boundsWidth}x{boundsHeight} (logical: {Screen.PrimaryScreen.Bounds.Width}x{Screen.PrimaryScreen.Bounds.Height})");
-                }
+                Log.Information($"Primary monitor resolution: {boundsWidth}x{boundsHeight}");
                 return;
             }
 
-            if (Screen.PrimaryScreen != null)
-            {
-                boundsWidth = (uint)Screen.PrimaryScreen.Bounds.Width;
-                boundsHeight = (uint)Screen.PrimaryScreen.Bounds.Height;
-                Log.Warning("Using logical resolution as fallback");
-            }
-            else
-            {
-                boundsWidth = 1920;
-                boundsHeight = 1080;
-                Log.Warning("Primary screen not found, defaulting to 1920x1080");
-            }
+            boundsWidth = 1920;
+            boundsHeight = 1080;
+            Log.Warning("Could not query primary monitor resolution, defaulting to 1920x1080");
         }
 
         public static void GetResolution(string resolution, out uint width, out uint height)

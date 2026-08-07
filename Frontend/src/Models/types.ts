@@ -10,6 +10,7 @@ export type StartupWindowMode = 'Normal' | 'Minimized';
 export type CloseButtonAction = 'Minimize' | 'Exit';
 
 export interface Content {
+  id: string;
   type: ContentType;
   title: string;
   game: string;
@@ -23,6 +24,7 @@ export interface Content {
   uploadId?: string;
   igdbId?: number;
   isImported: boolean;
+  compressed: boolean;
   audioTrackNames?: string[];
 }
 
@@ -47,6 +49,8 @@ export interface State {
   gameList: GameListEntry[];
   maxDisplayHeight: number;
   currentFolderSizeGb: number;
+  recordingDriveUsedGb: number | null;
+  recordingDriveFreeGb: number | null;
   cacheFolder: string;
 }
 
@@ -333,6 +337,7 @@ export interface Settings {
   audioOutputMode: AudioOutputMode;
   videoQualityPreset: VideoQualityPreset;
   clipQualityPreset: ClipQualityPreset;
+  confirmBeforeDeleting: boolean;
   removeOriginalAfterCompression: boolean;
   discardSessionsWithoutBookmarks: boolean;
   disableWindowsGameMode: boolean; // When true, ensures Windows Game Mode stays off on startup
@@ -354,6 +359,8 @@ export const initialState: State = {
   gameList: [],
   maxDisplayHeight: 1080,
   currentFolderSizeGb: 0,
+  recordingDriveUsedGb: null,
+  recordingDriveFreeGb: null,
   cacheFolder: '',
 };
 
@@ -414,6 +421,7 @@ export const initialSettings: Settings = {
   audioOutputMode: 'All',
   videoQualityPreset: 'high',
   clipQualityPreset: 'standard',
+  confirmBeforeDeleting: false,
   removeOriginalAfterCompression: false,
   discardSessionsWithoutBookmarks: false,
   disableWindowsGameMode: false,
@@ -442,6 +450,7 @@ export const initialSettings: Settings = {
 
 export interface Segment {
   id: number;
+  contentId: string;
   type: ContentType;
   startTime: number;
   endTime: number;

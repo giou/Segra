@@ -1,6 +1,7 @@
 using Serilog;
 using Segra.Backend.App;
 using Segra.Backend.Core;
+using Segra.Backend.Platform;
 using System.Text.Json.Serialization;
 
 namespace Segra.Backend.Core.Models
@@ -84,6 +85,7 @@ namespace Segra.Backend.Core.Models
         private bool _inputNoiseSuppression = true;
         private string _videoQualityPreset = "high";
         private string _clipQualityPreset = "standard";
+        private bool _confirmBeforeDeleting = false;
         private bool _removeOriginalAfterCompression = false;
         private bool _discardSessionsWithoutBookmarks = false;
         private bool _disableWindowsGameMode = false;
@@ -135,11 +137,11 @@ namespace Segra.Backend.Core.Models
         private void SetDefaultResolution()
         {
             int screenHeight = 1080; // Fallback value
-            var primaryScreen = Screen.PrimaryScreen;
 
-            if (primaryScreen != null)
+            if (PlatformServices.Display != null &&
+                PlatformServices.Display.GetPrimaryMonitorPhysicalResolution(out _, out uint height) && height > 0)
             {
-                screenHeight = primaryScreen.Bounds.Height;
+                screenHeight = (int)height;
             }
 
             if (screenHeight >= 2160)
@@ -502,7 +504,7 @@ namespace Segra.Backend.Core.Models
                 if (_runOnStartup != value)
                 {
                     _runOnStartup = value;
-                    StartupService.SetStartupStatus(value);
+                    PlatformServices.Startup.SetStartupStatus(value);
                 }
             }
         }
@@ -894,6 +896,19 @@ namespace Segra.Backend.Core.Models
             }
         }
 
+        [JsonPropertyName("confirmBeforeDeleting")]
+        public bool ConfirmBeforeDeleting
+        {
+            get => _confirmBeforeDeleting;
+            set
+            {
+                if (_confirmBeforeDeleting != value)
+                {
+                    _confirmBeforeDeleting = value;
+                }
+            }
+        }
+
         [JsonPropertyName("removeOriginalAfterCompression")]
         public bool RemoveOriginalAfterCompression
         {
@@ -1175,6 +1190,10 @@ namespace Segra.Backend.Core.Models
             Lowlight
         }
 
+        // Stable identity for the metadata, thumbnail and waveform files, so renaming the
+        // video never has to move them and titles can't collide across game folders.
+        public string Id { get; set; } = string.Empty;
+
         public ContentType Type { get; set; } = ContentType.Session;
 
         public string Title { get; set; } = string.Empty;
@@ -1210,8 +1229,6 @@ namespace Segra.Backend.Core.Models
 
         public DateTime CreatedAt { get; set; }
 
-        public AiAnalysis? AiAnalysis { get; set; }
-
         public string? UploadId { get; set; }
 
         public int? IgdbId { get; set; }
@@ -1223,11 +1240,8 @@ namespace Segra.Backend.Core.Models
         public List<string>? AudioTrackNames { get; set; }
 
         public bool IsImported { get; set; } = false;
-    }
 
-    public class AiAnalysis
-    {
-        public string? Id { get; set; }
+        public bool Compressed { get; set; } = false;
     }
 
     internal class AudioDevice : IEquatable<AudioDevice>
