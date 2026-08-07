@@ -2079,7 +2079,9 @@ namespace Segra.Backend.Recorder
             _ = MessageService.SendStateToFrontend("OBS Start recording (GameCaptureOnly deferred)");
 
             RecordingPreviewService.OnRecordingStarted((uint)eff.FrameRate);
+#if WINDOWS
             NotifyIconService.SetNotifyIconStatus(NotifyIconState.Recording);
+#endif
             StartDiskSpaceMonitor();
 
             Log.Information($"Deferred recording finalized: {state.VideoOutputPath}");

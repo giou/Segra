@@ -102,13 +102,13 @@ namespace Segra.Backend.Media
 
                 // Create metadata, thumbnail, and waveform.
                 // Lowlights use stream-copy extract+concat, so they preserve the source's audio tracks.
-                await ContentService.CreateMetadataFile(outputFilePath, Content.ContentType.Lowlight, content.Game!, null, content.Title, igdbId: content.IgdbId, audioTrackNames: content.AudioTrackNames);
+                string? lowlightId = await ContentService.CreateMetadataFile(outputFilePath, Content.ContentType.Lowlight, content.Game!, null, content.Title, igdbId: content.IgdbId, audioTrackNames: content.AudioTrackNames);
 
                 progressCallback?.Invoke(95, "Creating thumbnail...");
-                await ContentService.CreateThumbnail(outputFilePath, Content.ContentType.Lowlight);
+                await ContentService.CreateThumbnail(outputFilePath, Content.ContentType.Lowlight, lowlightId);
 
                 progressCallback?.Invoke(98, "Creating waveform...");
-                await ContentService.CreateWaveformFile(outputFilePath, Content.ContentType.Lowlight);
+                await ContentService.CreateWaveformFile(outputFilePath, Content.ContentType.Lowlight, lowlightId);
 
                 // Reload content
                 await SettingsService.LoadContentFromFolderIntoState();
