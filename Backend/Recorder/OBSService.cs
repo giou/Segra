@@ -1950,8 +1950,19 @@ namespace Segra.Backend.Recorder
                 // If the recording is not a replay buffer recording, AI is enabled, user is authenticated, and auto generate highlights is enabled -> analyze the video!
                 if (Settings.Instance.EnableAi && Settings.Instance.AutoGenerateHighlights && !isReplayBufferMode && bookmarks.Any(b => b.Type.IncludeInHighlight()))
                 {
-                    string fileName = Path.GetFileNameWithoutExtension(filePath);
-                    _ = AiService.CreateHighlight(fileName);
+                    // AiService keys content by id, so resolve the session that was just written to
+                    // metadata (loaded into state above) and pass its id instead of the file name.
+                    Content? content = AppState.Instance.Content.FirstOrDefault(c =>
+                        c.Type == Content.ContentType.Session &&
+                        string.Equals(c.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+                    if (content != null)
+                    {
+                        _ = AiService.CreateHighlight(content.Id);
+                    }
+                    else
+                    {
+                        Log.Warning($"Auto highlight skipped: session content not found for {filePath}");
+                    }
                 }
 
                 // If the recording is not a replay buffer recording, AI is enabled, user is authenticated, and auto generate lowlights is enabled -> analyze the video!
