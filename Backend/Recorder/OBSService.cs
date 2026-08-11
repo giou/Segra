@@ -1356,6 +1356,16 @@ namespace Segra.Backend.Recorder
                     actualAudioTrackNames
                 );
                 Log.Information("GameCaptureOnly: deferred output start until game capture hooks");
+
+                // The hook may have landed while the scene was going live, before the deferred
+                // start was armed (encoders/outputs are built after the hook wait). Its Hooked
+                // event then fired too early to finalize, so finalize now when the game is
+                // already hooked; otherwise the start sits pending until the next game's hook.
+                if (IsGameCaptureHooked)
+                {
+                    Log.Information("Game capture already hooked, finalizing deferred start immediately");
+                    FinalizeDeferredRecordingStart();
+                }
                 return true;
             }
 
@@ -2040,6 +2050,9 @@ namespace Segra.Backend.Recorder
         /// </summary>
         private static void FinalizeDeferredRecordingStart()
         {
+            // Idempotent: the Hooked event and the already-hooked check in StartRecordingCore can
+            // both observe the pending start; whichever runs second must no-op.
+            if (_pendingDeferredStart == null) return;
             var state = _pendingDeferredStart!;
             _pendingDeferredStart = null;
 
