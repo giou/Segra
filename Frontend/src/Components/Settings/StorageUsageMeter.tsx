@@ -7,6 +7,7 @@ const TYPE_COLORS: Record<ContentType, string> = {
   Buffer: '#d95926',
   Clip: '#199e70',
   Highlight: '#c98500',
+  Lowlight: '#8b5cf6',
 };
 
 const OTHER_COLOR = '#49515b';
@@ -16,9 +17,10 @@ const TYPE_LABELS: Record<ContentType, string> = {
   Buffer: 'Buffers',
   Clip: 'Clips',
   Highlight: 'Highlights',
+  Lowlight: 'Lowlights',
 };
 
-const TYPE_ORDER: ContentType[] = ['Session', 'Buffer', 'Clip', 'Highlight'];
+const TYPE_ORDER: ContentType[] = ['Session', 'Buffer', 'Clip', 'Highlight', 'Lowlight'];
 
 const normalizePath = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '');
 
