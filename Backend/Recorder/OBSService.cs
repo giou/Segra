@@ -56,6 +56,7 @@ namespace Segra.Backend.Recorder
         private static Source? _displaySource;
         private static readonly List<AudioInputCapture> _micSources = [];
         private static readonly List<AudioOutputCapture> _desktopSources = [];
+        private static ApplicationAudioCapture? _gameAudioSource = null;
         private static readonly List<(string Name, string Window, Source Source)> _voiceChatSources = [];
 
         // Mixer mask of the shared "Voice Chat" track, so sources created mid-recording land on the same track
@@ -934,11 +935,26 @@ namespace Segra.Backend.Recorder
                         Log.Information("Game capture color space set to Rec.2100 PQ (HDR)");
                     }
 
-                    // Enable capture_audio on game capture when using GameOnly or GameAndDiscord mode
+                    // In GameOnly/GameAndDiscord modes capture the game's audio with a
+                    // standalone application audio capture source — the same mechanism as
+                    // OBS Studio's native "Application Audio Capture" source. The game
+                    // capture's capture_audio option (an internal app capture rerouted into
+                    // the game capture source) audibly degrades the signal even at matching
+                    // sample rates, so it is not used.
                     if (Settings.Instance.AudioOutputMode != AudioOutputMode.All)
                     {
-                        GameCaptureSource.SetCaptureAudio();
-                        Log.Information($"Game capture audio enabled (mode: {Settings.Instance.AudioOutputMode})");
+                        try
+                        {
+                            _gameAudioSource = ApplicationAudioCapture.FromExecutable(fileName, "Game Audio");
+                            _gameAudioSource.Volume = eff.VolumeMultiplier;
+                            _mainScene!.AddSource(_gameAudioSource);
+                            Log.Information($"Game audio source created (mode: {Settings.Instance.AudioOutputMode})");
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Warning($"Failed to create game audio source: {ex.Message}");
+                            _gameAudioSource = null;
+                        }
                     }
 
                     Log.Information($"Game capture configured for: {fileName}");
@@ -1186,7 +1202,7 @@ namespace Segra.Backend.Recorder
                 trackGroups.Add([desktopSource]);
 
             int voiceChatGroupIndex = -1;
-            if (audioOutputMode != AudioOutputMode.All && GameCaptureSource != null)
+            if (audioOutputMode != AudioOutputMode.All && _gameAudioSource != null)
             {
                 // Desktop sources are fallback-only: assign to full mix (Track 1) only, no separate tracks
                 foreach (var desktopSource in _desktopSources)
@@ -1199,7 +1215,7 @@ namespace Segra.Backend.Recorder
                 trackGroups = [];
                 foreach (var micSource in _micSources)
                     trackGroups.Add([micSource]);
-                trackGroups.Add([GameCaptureSource]);
+                trackGroups.Add([_gameAudioSource]);
 
                 // The voice chat group is reserved even when currently empty so apps launched
                 // mid-recording can still join its track (the encoders are fixed once recording starts)
@@ -1217,7 +1233,7 @@ namespace Segra.Backend.Recorder
                 foreach (var device in Settings.Instance.InputDevices.Where(d => !string.IsNullOrEmpty(d.Id)))
                     audioDeviceNames.Add(device.Name.Replace(" (Default)", "") ?? "Microphone");
             }
-            if (audioOutputMode == AudioOutputMode.All || GameCaptureSource == null)
+            if (audioOutputMode == AudioOutputMode.All || _gameAudioSource == null)
             {
                 if (Settings.Instance.OutputDevices != null)
                 {
@@ -2028,7 +2044,7 @@ namespace Segra.Backend.Recorder
 
                 // Switch output audio: mute desktop sources and unmute game/voice chat sources
                 var audioOutputMode = Settings.Instance.AudioOutputMode;
-                if (audioOutputMode != AudioOutputMode.All)
+                if (audioOutputMode != AudioOutputMode.All && _gameAudioSource != null)
                 {
                     foreach (var desktopSource in _desktopSources)
                     {
@@ -2177,7 +2193,7 @@ namespace Segra.Backend.Recorder
 
             // Switch output audio back: unmute desktop sources and mute voice chat sources
             var audioOutputMode = Settings.Instance.AudioOutputMode;
-            if (audioOutputMode != AudioOutputMode.All)
+            if (audioOutputMode != AudioOutputMode.All && _gameAudioSource != null)
             {
                 foreach (var desktopSource in _desktopSources)
                 {
@@ -2524,6 +2540,17 @@ namespace Segra.Backend.Recorder
                 }
             }
             _desktopSources.Clear();
+
+            // Dispose game audio source
+            try
+            {
+                _gameAudioSource?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Failed to dispose game audio source: {ex.Message}");
+            }
+            _gameAudioSource = null;
 
             // Dispose voice chat audio sources
             foreach (var (voiceName, _, voiceSource) in _voiceChatSources)
