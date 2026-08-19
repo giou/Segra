@@ -24,6 +24,7 @@ export interface Content {
   createdAt: string;
   uploadId?: string;
   igdbId?: number;
+  gameExePath?: string;
   isImported: boolean;
   compressed: boolean;
   audioTrackNames?: string[];
@@ -264,7 +265,7 @@ export const DEFAULT_MENU_ITEMS: MenuItemPreference[] = [
   { id: 'Settings', visible: true },
 ];
 
-export const MENU_ITEM_CONTENT_TYPES: Record<MenuItemId, ContentType[]> = {
+const MENU_ITEM_CONTENT_TYPES: Record<MenuItemId, ContentType[]> = {
   'Full Sessions': ['Session'],
   'Replay Buffer': ['Buffer'],
   Clips: ['Clip'],
@@ -415,7 +416,7 @@ export const initialSettings: Settings = {
   clipAudioQuality: '128k',
   clipPreset: 'veryfast',
   clipKeepSeparateAudioTracks: false,
-  copyCompressSizesMb: [10, 50, 100, 500],
+  copyCompressSizesMb: [20, 50, 100, 500],
   soundEffectsVolume: 1,
   showNewBadgeOnVideos: false,
   showGameBackground: true,
