@@ -79,12 +79,13 @@ namespace Segra.Backend.Media
 
                 progressCallback?.Invoke(10, "Extracting clips...");
 
-                // Extract and concatenate segments using stream copy
+                // Extract and concatenate segments using stream copy - preserve source audio track names
                 bool success = await ExtractAndConcatenateSegments(
                     inputFilePath,
                     outputFilePath,
                     mergedSegments,
-                    (progress, message) => progressCallback?.Invoke(10 + (int)(progress * 80), message)
+                    (progress, message) => progressCallback?.Invoke(10 + (int)(progress * 80), message),
+                    content.AudioTrackNames
                 );
 
                 if (!success || !File.Exists(outputFilePath))
@@ -137,7 +138,8 @@ namespace Segra.Backend.Media
             string inputFilePath,
             string outputFilePath,
             List<TimeSegment> segments,
-            Action<double, string>? progressCallback = null)
+            Action<double, string>? progressCallback = null,
+            List<string>? audioTrackNames = null)
         {
             if (!FFmpegService.FFmpegExists())
             {
@@ -166,18 +168,31 @@ namespace Segra.Backend.Media
                     string tempFile = PathUtils.Combine(Path.GetTempPath(), $"highlight_segment_{Guid.NewGuid()}.mp4");
                     double segmentDuration = segment.EndTime - segment.StartTime;
 
-                    progressCallback?.Invoke(processedDuration / totalDuration, $"Extracting clip {i + 1} of {segments.Count}");
-
-                    var arguments = new[]
+                    var arguments = new List<string>
                     {
                         "-y",
                         "-ss", segment.StartTime.ToString(CultureInfo.InvariantCulture),
                         "-t", segmentDuration.ToString(CultureInfo.InvariantCulture),
                         "-i", inputFilePath,
+                        "-map", "0",
                         "-c", "copy",
                         "-avoid_negative_ts", "make_zero",
-                        tempFile
                     };
+                    // Preserve OBS track names (trak/udta/name) which ffmpeg's stream copy drops by default.
+                    // ClipService does the same via explicit -metadata:s:a title tags.
+                    if (audioTrackNames != null)
+                    {
+                        for (int t = 0; t < audioTrackNames.Count; t++)
+                        {
+                            var name = audioTrackNames[t];
+                            if (!string.IsNullOrWhiteSpace(name))
+                            {
+                                arguments.Add($"-metadata:s:a:{t}");
+                                arguments.Add($"title={name}");
+                            }
+                        }
+                    }
+                    arguments.Add(tempFile);
 
                     await FFmpegService.RunSimple(arguments);
 
@@ -211,17 +226,29 @@ namespace Segra.Backend.Media
                 var concatLines = tempFiles.Select(FFmpegService.BuildConcatListLine);
                 await File.WriteAllLinesAsync(concatFilePath, concatLines);
 
-                // Concatenate all segments using stream copy
-                var concatArguments = new[]
+                var concatArguments = new List<string>
                 {
                     "-y",
                     "-f", "concat",
                     "-safe", "0",
                     "-i", concatFilePath,
+                    "-map", "0",
                     "-c", "copy",
                     "-movflags", "+faststart",
-                    outputFilePath
                 };
+                if (audioTrackNames != null)
+                {
+                    for (int t = 0; t < audioTrackNames.Count; t++)
+                    {
+                        var name = audioTrackNames[t];
+                        if (!string.IsNullOrWhiteSpace(name))
+                        {
+                            concatArguments.Add($"-metadata:s:a:{t}");
+                            concatArguments.Add($"title={name}");
+                        }
+                    }
+                }
+                concatArguments.Add(outputFilePath);
                 await FFmpegService.RunSimple(concatArguments);
 
                 progressCallback?.Invoke(1.0, "Done");
