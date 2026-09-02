@@ -200,7 +200,43 @@ namespace Segra.Backend.Windows.Storage
             {
                 Log.Information("Storage usage is within limits, no cleanup needed");
             }
+
+            // Optional per-type limits — only enforced when the user has set a value (null = no limit).
+            await EnsureOptionalFolderBelowLimit(FolderNames.Highlights, Settings.Instance.HighlightStorageLimit, Content.ContentType.Highlight);
+            await EnsureOptionalFolderBelowLimit(FolderNames.Lowlights, Settings.Instance.LowlightStorageLimit, Content.ContentType.Lowlight);
         }
+
+        private static async Task EnsureOptionalFolderBelowLimit(string typeFolderName, int? limitGb, Content.ContentType contentType)
+        {
+            if (!limitGb.HasValue || limitGb.Value <= 0)
+                return;
+
+            string contentFolder = Settings.Instance.ContentFolder;
+            if (string.IsNullOrEmpty(contentFolder))
+                return;
+
+            string typeFolder = Path.Combine(contentFolder, typeFolderName);
+            if (!Directory.Exists(typeFolder))
+                return;
+
+            long limitBytes = (long)limitGb.Value * BYTES_PER_GB;
+            long currentBytes = CalculateFolderSize(typeFolder);
+            double currentGb = (double)currentBytes / BYTES_PER_GB;
+
+            Log.Information($"{contentType} storage usage: {currentGb:F2} GB, limit: {limitGb.Value} GB");
+
+            if (currentBytes <= limitBytes)
+            {
+                Log.Information($"{contentType} storage is within its limit, no cleanup needed");
+                return;
+            }
+
+            long excessBytes = currentBytes - limitBytes;
+            double excessGb = (double)excessBytes / BYTES_PER_GB;
+            Log.Information($"{contentType} storage limit exceeded by {excessGb:F2} GB, starting cleanup");
+            await DeleteOldestInFolder(typeFolder, excessBytes, contentType);
+        }
+
 
         internal static long CalculateFolderSize(string folderPath)
         {
@@ -308,6 +344,68 @@ namespace Segra.Backend.Windows.Storage
             {
                 double stillNeededGB = (double)(spaceToFreeBytes - freedSpaceBytes) / BYTES_PER_GB;
                 Log.Information($"Warning: Could not free enough space. Still needed: {stillNeededGB:F2} GB");
+            }
+        }
+
+        private static async Task DeleteOldestInFolder(string typeFolder, long spaceToFreeBytes, Content.ContentType contentType)
+        {
+            double spaceToFreeGB = (double)spaceToFreeBytes / BYTES_PER_GB;
+            DateTime oneHourAgo = DateTime.Now.AddHours(-1);
+
+            if (!Directory.Exists(typeFolder))
+            {
+                Log.Information($"Folder for {contentType} does not exist: {PathUtils.Normalize(typeFolder)}");
+                return;
+            }
+
+            var candidateFiles = Directory.GetFiles(typeFolder, "*", SearchOption.AllDirectories)
+                .Select(f => new FileInfo(f))
+                .Where(f => f.LastWriteTime < oneHourAgo)
+                .OrderBy(f => f.CreationTime)
+                .ToList();
+
+            Log.Information($"Found {candidateFiles.Count} eligible {contentType} files older than 1 hour (need to free {spaceToFreeGB:F2} GB)");
+
+            long freedSpaceBytes = 0;
+            int deletedCount = 0;
+
+            foreach (FileInfo file in candidateFiles)
+            {
+                if (freedSpaceBytes >= spaceToFreeBytes)
+                    break;
+
+                string fileFullName = PathUtils.Normalize(file.FullName);
+                long fileSize = file.Length;
+                double fileSizeMB = (double)fileSize / (1024 * 1024);
+
+                try
+                {
+                    string? contentId = AppState.Instance.Content.FirstOrDefault(c =>
+                        c.Type == contentType &&
+                        string.Equals(PathUtils.Normalize(c.FilePath), fileFullName, StringComparison.OrdinalIgnoreCase))?.Id;
+
+                    Log.Information($"Deleting {contentType} file: {fileFullName} ({fileSizeMB:F2} MB)");
+                    await ContentService.DeleteContent(fileFullName, contentType, contentId);
+
+                    freedSpaceBytes += fileSize;
+                    deletedCount++;
+
+                    double freedSpaceGB = (double)freedSpaceBytes / BYTES_PER_GB;
+                    Log.Information($"Successfully deleted {contentType} file, freed space so far: {freedSpaceGB:F2} GB");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Error deleting {contentType} file {fileFullName}: {ex.Message}");
+                }
+            }
+
+            double totalFreedGB = (double)freedSpaceBytes / BYTES_PER_GB;
+            Log.Information($"{contentType} storage cleanup completed: {deletedCount} files deleted, {totalFreedGB:F2} GB freed");
+
+            if (freedSpaceBytes < spaceToFreeBytes)
+            {
+                double stillNeededGB = (double)(spaceToFreeBytes - freedSpaceBytes) / BYTES_PER_GB;
+                Log.Information($"Warning: Could not free enough space for {contentType}. Still needed: {stillNeededGB:F2} GB");
             }
         }
     }

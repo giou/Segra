@@ -15,7 +15,6 @@ const normalizePath = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/,
 
 const TYPE_FOLDERS = ['Full Sessions', 'Replay Buffers', 'Clips', 'Highlights'];
 
-// The recording-path root a file currently lives under (the part before its content-type folder).
 const deriveSourceRoot = (filePath: string) => {
   const p = normalizePath(filePath);
   const lower = p.toLowerCase();
@@ -39,6 +38,12 @@ export default function StorageSettingsSection({
   const appState = useAppState();
   const { isMigrating } = useContentMigration();
   const [localStorageLimit, setLocalStorageLimit] = useState<string>(String(settings.storageLimit));
+  const [localHighlightLimit, setLocalHighlightLimit] = useState<string>(
+    settings.highlightStorageLimit != null ? String(settings.highlightStorageLimit) : '20',
+  );
+  const [localLowlightLimit, setLocalLowlightLimit] = useState<string>(
+    settings.lowlightStorageLimit != null ? String(settings.lowlightStorageLimit) : '10',
+  );
   const { openModal, closeModal } = useModal();
   const driveUsedGb = appState.recordingDriveUsedGb;
   const driveFreeGb = appState.recordingDriveFreeGb;
@@ -48,11 +53,21 @@ export default function StorageSettingsSection({
   }, [settings.storageLimit]);
 
   useEffect(() => {
+    setLocalHighlightLimit(
+      settings.highlightStorageLimit != null ? String(settings.highlightStorageLimit) : '20',
+    );
+  }, [settings.highlightStorageLimit]);
+
+  useEffect(() => {
+    setLocalLowlightLimit(
+      settings.lowlightStorageLimit != null ? String(settings.lowlightStorageLimit) : '10',
+    );
+  }, [settings.lowlightStorageLimit]);
+
+  useEffect(() => {
     sendMessageToBackend('RefreshStorageStats');
   }, []);
 
-  // Content whose video file is stored outside the current recording path (left behind after
-  // the recording path was changed). The migration button below offers to consolidate it.
   const outsideContent = useMemo(() => {
     const root = normalizePath((settings.contentFolder || '').trim());
     if (!root) return [];
@@ -75,6 +90,24 @@ export default function StorageSettingsSection({
         Boolean,
       ),
     [outsideContent],
+  );
+
+  const highlightUsageGb = useMemo(
+    () =>
+      appState.content
+        .filter((c) => c.type === 'Highlight')
+        .reduce((sum, c) => sum + (c.fileSizeKb || 0), 0) /
+      (1024 * 1024),
+    [appState.content],
+  );
+
+  const lowlightUsageGb = useMemo(
+    () =>
+      appState.content
+        .filter((c) => c.type === 'Lowlight')
+        .reduce((sum, c) => sum + (c.fileSizeKb || 0), 0) /
+      (1024 * 1024),
+    [appState.content],
   );
 
   const handleBrowseClick = () => {
@@ -111,14 +144,10 @@ export default function StorageSettingsSection({
 
   const handleStorageLimitBlur = () => {
     const currentFolderSizeGb = appState.currentFolderSizeGb;
-    const numericLimit = Number(localStorageLimit) || 1; // Default to 1 if empty/invalid
-
-    // Update display if empty/invalid
+    const numericLimit = Number(localStorageLimit) || 1;
     if (!localStorageLimit || isNaN(Number(localStorageLimit))) {
       setLocalStorageLimit('1');
     }
-
-    // Check if the new limit is below the current folder size
     if (numericLimit < currentFolderSizeGb) {
       openModal(
         <ConfirmationModal
@@ -131,7 +160,6 @@ export default function StorageSettingsSection({
             closeModal();
           }}
           onCancel={() => {
-            // Reset to the previous value
             setLocalStorageLimit(String(settings.storageLimit));
             closeModal();
           }}
@@ -142,10 +170,134 @@ export default function StorageSettingsSection({
     }
   };
 
+  const handleHighlightToggle = (enabled: boolean) => {
+    if (enabled) {
+      const numeric = Number(localHighlightLimit) || 20;
+      const clamped = Math.max(1, Math.min(1000, numeric));
+      setLocalHighlightLimit(String(clamped));
+      if (clamped < highlightUsageGb) {
+        openModal(
+          <ConfirmationModal
+            title="Highlight Storage Limit Warning"
+            description={`The highlight limit you entered (${clamped} GB) is lower than your current highlights size (${highlightUsageGb.toFixed(2)} GB).\n\nThis will cause older highlights to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
+            confirmText="Apply Limit"
+            cancelText="Cancel"
+            onConfirm={() => {
+              updateSettings({ highlightStorageLimit: clamped });
+              closeModal();
+            }}
+            onCancel={closeModal}
+          />,
+        );
+      } else {
+        updateSettings({ highlightStorageLimit: clamped });
+      }
+    } else {
+      updateSettings({ highlightStorageLimit: null });
+    }
+  };
+
+  const handleLowlightToggle = (enabled: boolean) => {
+    if (enabled) {
+      const numeric = Number(localLowlightLimit) || 10;
+      const clamped = Math.max(1, Math.min(1000, numeric));
+      setLocalLowlightLimit(String(clamped));
+      if (clamped < lowlightUsageGb) {
+        openModal(
+          <ConfirmationModal
+            title="Lowlight Storage Limit Warning"
+            description={`The lowlight limit you entered (${clamped} GB) is lower than your current lowlights size (${lowlightUsageGb.toFixed(2)} GB).\n\nThis will cause older lowlights to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
+            confirmText="Apply Limit"
+            cancelText="Cancel"
+            onConfirm={() => {
+              updateSettings({ lowlightStorageLimit: clamped });
+              closeModal();
+            }}
+            onCancel={closeModal}
+          />,
+        );
+      } else {
+        updateSettings({ lowlightStorageLimit: clamped });
+      }
+    } else {
+      updateSettings({ lowlightStorageLimit: null });
+    }
+  };
+
+  const handleHighlightLimitBlur = () => {
+    if (settings.highlightStorageLimit == null) return;
+    const numeric = Number(localHighlightLimit) || 20;
+    const clamped = Math.max(1, Math.min(1000, numeric));
+    if (!localHighlightLimit || isNaN(Number(localHighlightLimit))) {
+      setLocalHighlightLimit(String(clamped));
+    } else {
+      setLocalHighlightLimit(String(clamped));
+    }
+    if (clamped < highlightUsageGb) {
+      openModal(
+        <ConfirmationModal
+          title="Highlight Storage Limit Warning"
+          description={`The highlight limit you entered (${clamped} GB) is lower than your current highlights size (${highlightUsageGb.toFixed(2)} GB).\n\nThis will cause older highlights to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
+          confirmText="Apply Limit"
+          cancelText="Cancel"
+          onConfirm={() => {
+            updateSettings({ highlightStorageLimit: clamped });
+            closeModal();
+          }}
+          onCancel={() => {
+            setLocalHighlightLimit(
+              settings.highlightStorageLimit != null
+                ? String(settings.highlightStorageLimit)
+                : '20',
+            );
+            closeModal();
+          }}
+        />,
+      );
+    } else if (clamped !== settings.highlightStorageLimit) {
+      updateSettings({ highlightStorageLimit: clamped });
+    }
+  };
+
+  const handleLowlightLimitBlur = () => {
+    if (settings.lowlightStorageLimit == null) return;
+    const numeric = Number(localLowlightLimit) || 10;
+    const clamped = Math.max(1, Math.min(1000, numeric));
+    if (!localLowlightLimit || isNaN(Number(localLowlightLimit))) {
+      setLocalLowlightLimit(String(clamped));
+    } else {
+      setLocalLowlightLimit(String(clamped));
+    }
+    if (clamped < lowlightUsageGb) {
+      openModal(
+        <ConfirmationModal
+          title="Lowlight Storage Limit Warning"
+          description={`The lowlight limit you entered (${clamped} GB) is lower than your current lowlights size (${lowlightUsageGb.toFixed(2)} GB).\n\nThis will cause older lowlights to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
+          confirmText="Apply Limit"
+          cancelText="Cancel"
+          onConfirm={() => {
+            updateSettings({ lowlightStorageLimit: clamped });
+            closeModal();
+          }}
+          onCancel={() => {
+            setLocalLowlightLimit(
+              settings.lowlightStorageLimit != null ? String(settings.lowlightStorageLimit) : '10',
+            );
+            closeModal();
+          }}
+        />,
+      );
+    } else if (clamped !== settings.lowlightStorageLimit) {
+      updateSettings({ lowlightStorageLimit: clamped });
+    }
+  };
+
+  const highlightEnabled = settings.highlightStorageLimit != null;
+  const lowlightEnabled = settings.lowlightStorageLimit != null;
+
   return (
     <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
       <div className="grid grid-cols-2 gap-4">
-        {/* Recording Path */}
         <div className="form-control">
           <label className="label pb-1">
             <span className="label-text text-base-content">Recording Path</span>
@@ -170,7 +322,6 @@ export default function StorageSettingsSection({
           </div>
         </div>
 
-        {/* Cache Folder Path */}
         <div className="form-control">
           <label className="label pb-1">
             <span className="label-text text-base-content">Cache Path</span>
@@ -195,12 +346,10 @@ export default function StorageSettingsSection({
           </div>
         </div>
 
-        {/* Storage Limit */}
         <div className="form-control">
           <label className="label block px-0 pb-1">
             <span className="label-text text-base-content">Storage Limit (GB)</span>
           </label>
-
           <input
             type="number"
             name="storageLimit"
@@ -211,6 +360,67 @@ export default function StorageSettingsSection({
             min="1"
             className="input input-bordered bg-base-200 w-full block outline-none focus:border-base-400"
           />
+          <span className="text-xs text-base-content/60 mt-1">
+            Sessions and Replay Buffers auto-delete when exceeded.
+          </span>
+        </div>
+
+        <div className="form-control">
+          <label className="label pb-1 flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm checkbox-primary"
+              checked={highlightEnabled}
+              onChange={(e) => handleHighlightToggle(e.target.checked)}
+            />
+            <span className="label-text text-base-content">Highlight Storage Limit (GB)</span>
+            {!highlightEnabled && <span className="text-xs text-base-content/50">— Unlimited</span>}
+          </label>
+          <input
+            type="number"
+            name="highlightStorageLimit"
+            value={localHighlightLimit}
+            onChange={(e) => setLocalHighlightLimit(e.target.value)}
+            onBlur={handleHighlightLimitBlur}
+            placeholder="Unlimited"
+            min="1"
+            max="1000"
+            className={`input input-bordered bg-base-200 w-full block outline-none focus:border-base-400 ${!highlightEnabled ? 'opacity-60' : ''}`}
+          />
+          <span className="text-xs text-base-content/60 mt-1">
+            {highlightEnabled
+              ? `Oldest highlights auto-delete when highlights exceed limit. Currently ${highlightUsageGb.toFixed(2)} GB.`
+              : 'Highlights are never auto-deleted. Edit the value then enable to set a cap.'}
+          </span>
+        </div>
+
+        <div className="form-control col-span-2 sm:col-span-1">
+          <label className="label pb-1 flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm checkbox-primary"
+              checked={lowlightEnabled}
+              onChange={(e) => handleLowlightToggle(e.target.checked)}
+            />
+            <span className="label-text text-base-content">Lowlight Storage Limit (GB)</span>
+            {!lowlightEnabled && <span className="text-xs text-base-content/50">— Unlimited</span>}
+          </label>
+          <input
+            type="number"
+            name="lowlightStorageLimit"
+            value={localLowlightLimit}
+            onChange={(e) => setLocalLowlightLimit(e.target.value)}
+            onBlur={handleLowlightLimitBlur}
+            placeholder="Unlimited"
+            min="1"
+            max="1000"
+            className={`input input-bordered bg-base-200 w-full block outline-none focus:border-base-400 ${!lowlightEnabled ? 'opacity-60' : ''}`}
+          />
+          <span className="text-xs text-base-content/60 mt-1">
+            {lowlightEnabled
+              ? `Oldest lowlights auto-delete when lowlights exceed limit. Currently ${lowlightUsageGb.toFixed(2)} GB.`
+              : 'Lowlights are never auto-deleted. Edit the value then enable to set a cap.'}
+          </span>
         </div>
       </div>
 
@@ -225,7 +435,6 @@ export default function StorageSettingsSection({
         />
       </div>
 
-      {/* Migrate content stored outside the recording path */}
       <AnimatePresence>
         {outsideCount > 0 && (
           <motion.div

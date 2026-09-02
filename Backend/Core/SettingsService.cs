@@ -198,6 +198,9 @@ namespace Segra.Backend.Core
         {
             var settings = Settings.Instance;
             bool hasChanges = false;
+            bool storageLimitChanged = false;
+            bool highlightLimitChanged = false;
+            bool lowlightLimitChanged = false;
 
             // Begin bulk update to suppress multiple state updates
             settings.BeginBulkUpdate();
@@ -596,7 +599,29 @@ namespace Segra.Backend.Core
                 Log.Information($"StorageLimit changed from '{settings.StorageLimit} GB' to '{updatedSettings.StorageLimit} GB'");
                 settings.StorageLimit = updatedSettings.StorageLimit;
                 hasChanges = true;
+                storageLimitChanged = true;
             }
+
+            if (settings.HighlightStorageLimit != updatedSettings.HighlightStorageLimit)
+            {
+                string oldVal = settings.HighlightStorageLimit.HasValue ? $"{settings.HighlightStorageLimit.Value} GB" : "Unlimited";
+                string newVal = updatedSettings.HighlightStorageLimit.HasValue ? $"{updatedSettings.HighlightStorageLimit.Value} GB" : "Unlimited";
+                Log.Information($"HighlightStorageLimit changed from '{oldVal}' to '{newVal}'");
+                settings.HighlightStorageLimit = updatedSettings.HighlightStorageLimit;
+                hasChanges = true;
+                highlightLimitChanged = true;
+            }
+
+            if (settings.LowlightStorageLimit != updatedSettings.LowlightStorageLimit)
+            {
+                string oldVal = settings.LowlightStorageLimit.HasValue ? $"{settings.LowlightStorageLimit.Value} GB" : "Unlimited";
+                string newVal = updatedSettings.LowlightStorageLimit.HasValue ? $"{updatedSettings.LowlightStorageLimit.Value} GB" : "Unlimited";
+                Log.Information($"LowlightStorageLimit changed from '{oldVal}' to '{newVal}'");
+                settings.LowlightStorageLimit = updatedSettings.LowlightStorageLimit;
+                hasChanges = true;
+                lowlightLimitChanged = true;
+            }
+
 
             if (!settings.InputDevices.SequenceEqual(updatedSettings.InputDevices, new DeviceSettingEqualityComparer()))
             {
@@ -821,6 +846,22 @@ namespace Segra.Backend.Core
             {
                 Log.Information("Settings updated, saving changes");
                 settings.EndBulkUpdateAndSaveSettings();
+                if (storageLimitChanged || highlightLimitChanged || lowlightLimitChanged)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await StorageService.EnsureStorageBelowLimit();
+                            StorageService.UpdateFolderSizeInState(true);
+                            StorageService.UpdateRecordingDriveSpaceInState(true);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error(ex, "Error enforcing storage limits after settings change");
+                        }
+                    });
+                }
             }
             else
             {

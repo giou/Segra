@@ -1978,9 +1978,10 @@ export default function VideoComponent({ video }: { video: Content }) {
               }, 600);
             }}
           >
-            <div className={videoWrapperClassName}>
+            <div className={videoWrapperClassName} data-allow-native-context-menu>
               <video
                 autoPlay
+                data-allow-native-context-menu
                 crossOrigin="anonymous"
                 className="w-full h-full object-contain"
                 src={getVideoPath()}
@@ -2559,7 +2560,9 @@ export default function VideoComponent({ video }: { video: Content }) {
                   <ChevronRight className="w-5 h-5" />
                 </button>
               </div>
-              {(video.type === 'Clip' || video.type === 'Highlight' || video.type === 'Lowlight') && (
+              {(video.type === 'Clip' ||
+                video.type === 'Highlight' ||
+                video.type === 'Lowlight') && (
                 <>
                   {!settings.airplaneMode && (
                     <Button

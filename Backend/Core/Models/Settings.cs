@@ -40,6 +40,8 @@ namespace Segra.Backend.Core.Models
         private string? _selectedOBSVersion = null; // null means automatic (latest non-beta)
         private bool _pendingOBSUpdate = false;
         private int _storageLimit = 100;
+        private int? _highlightStorageLimit = null;
+        private int? _lowlightStorageLimit = null;
         private List<DeviceSetting> _inputDevices = new List<DeviceSetting>();
         private List<DeviceSetting> _outputDevices = new List<DeviceSetting>();
         private bool _forceMonoInputSources = false;
@@ -324,6 +326,26 @@ namespace Segra.Backend.Core.Models
             set
             {
                 _storageLimit = value;
+            }
+        }
+
+        [JsonPropertyName("highlightStorageLimit")]
+        public int? HighlightStorageLimit
+        {
+            get => _highlightStorageLimit;
+            set
+            {
+                _highlightStorageLimit = value;
+            }
+        }
+
+        [JsonPropertyName("lowlightStorageLimit")]
+        public int? LowlightStorageLimit
+        {
+            get => _lowlightStorageLimit;
+            set
+            {
+                _lowlightStorageLimit = value;
             }
         }
 

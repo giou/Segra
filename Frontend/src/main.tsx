@@ -26,9 +26,16 @@ const queryClient = new QueryClient({
 onSignOut(() => queryClient.clear());
 
 // Segra provides its own context menus where right-click actions are supported.
+// Native browser menus are suppressed globally so only custom menus appear —
+// except on the video preview where the native menu is needed for actions like
+// "Copy video frame" that the browser provides for <video> elements.
 document.addEventListener('contextmenu', (event) => {
-  event.preventDefault();
   window.dispatchEvent(new Event('segra:close-content-context-menus'));
+  const target = event.target as HTMLElement;
+  if (target.closest('video') || target.closest('[data-allow-native-context-menu]')) {
+    return;
+  }
+  event.preventDefault();
 });
 
 // Wait for Roboto to load before the first render, so the UI never appears with a

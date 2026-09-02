@@ -289,6 +289,8 @@ export interface Settings {
   encoder: 'gpu' | 'cpu';
   codec: Codec | null;
   storageLimit: number;
+  highlightStorageLimit: number | null;
+  lowlightStorageLimit: number | null;
   contentFolder: string;
   cacheFolder: string;
   inputDevices: DeviceSetting[];
@@ -377,6 +379,8 @@ export const initialSettings: Settings = {
   encoder: 'gpu',
   codec: null,
   storageLimit: 100,
+  highlightStorageLimit: null,
+  lowlightStorageLimit: null,
   contentFolder: '',
   cacheFolder: '',
   inputDevices: [],
