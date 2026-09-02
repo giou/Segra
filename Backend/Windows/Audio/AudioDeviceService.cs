@@ -17,26 +17,49 @@ namespace Segra.Backend.Windows.Audio
         /// audio session runs at exactly this mix rate. OBS requests its project rate from
         /// game capture's process loopback, so matching the mix rate avoids the Windows audio
         /// engine resampling the game stream — its resampler audibly rings on rate mismatch.
+        /// This probe touches WASAPI COM which can block indefinitely if the audio service is
+        /// hung, so it is time-boxed and never throws.
         /// </summary>
         public static int GetDefaultOutputSampleRate()
         {
+            const int fallback = 48000;
             try
             {
-                using var enumerator = new MMDeviceEnumerator();
-                using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console);
-                using var audioClient = defaultDevice.AudioClient;
-                int sampleRate = audioClient.MixFormat.SampleRate;
+                // Run the WASAPI probe on a separate thread and time-box it — a hung audio
+                // service/device would otherwise stall OBS startup forever ("Starting OBS").
+                var probe = Task.Run(() =>
+                {
+                    try
+                    {
+                        using var enumerator = new MMDeviceEnumerator();
+                        using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console);
+                        if (defaultDevice == null) return fallback;
+                        using var audioClient = defaultDevice.AudioClient;
+                        if (audioClient == null) return fallback;
+                        var fmt = audioClient.MixFormat;
+                        if (fmt == null) return fallback;
+                        int sampleRate = fmt.SampleRate;
+                        // Only drive OBS at rates it is routinely used with; anything else (e.g. an
+                        // exotic 32 kHz endpoint) falls back to 48 kHz, the Windows/industry default.
+                        return sampleRate is 44100 or 48000 or 88200 or 96000 or 176400 or 192000
+                            ? sampleRate
+                            : fallback;
+                    }
+                    catch
+                    {
+                        return fallback;
+                    }
+                });
 
-                // Only drive OBS at rates it is routinely used with; anything else (e.g. an
-                // exotic 32 kHz endpoint) falls back to 48 kHz, the Windows/industry default.
-                return sampleRate is 44100 or 48000 or 88200 or 96000 or 176400 or 192000
-                    ? sampleRate
-                    : 48000;
+                if (!probe.Wait(TimeSpan.FromSeconds(1.5)))
+                    return fallback;
+
+                return probe.Result;
             }
             catch
             {
                 // No default device, or COM failure — 48 kHz is the safest fallback.
-                return 48000;
+                return fallback;
             }
         }
 

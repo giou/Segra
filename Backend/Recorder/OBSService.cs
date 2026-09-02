@@ -582,7 +582,27 @@ namespace Segra.Backend.Recorder
                 // so this rate only has to match where the game's audio session actually runs.
                 int audioSampleRate = 48000;
 #if WINDOWS
-                audioSampleRate = AudioDeviceService.GetDefaultOutputSampleRate();
+                try
+                {
+                    // The WASAPI probe can block indefinitely if the audio service/device is hung —
+                    // don't let that stall OBS startup ("Starting OBS" hang). Time-box it and
+                    // fall back to 48 kHz, the Windows/industry default.
+                    var probeTask = Task.Run(() => AudioDeviceService.GetDefaultOutputSampleRate());
+                    var completed = await Task.WhenAny(probeTask, Task.Delay(TimeSpan.FromSeconds(2)));
+                    if (completed == probeTask)
+                    {
+                        audioSampleRate = await probeTask;
+                    }
+                    else
+                    {
+                        Log.Warning("Audio sample rate probe timed out after 2s, using fallback 48000 Hz");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"Audio sample rate probe failed: {ex.Message}, using fallback 48000 Hz");
+                    audioSampleRate = 48000;
+                }
 #endif
                 Log.Information($"OBS audio sample rate: {audioSampleRate} Hz (default render device mix format, 48 kHz fallback)");
 
