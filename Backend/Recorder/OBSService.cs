@@ -1219,7 +1219,7 @@ namespace Segra.Backend.Recorder
             {
                 // Desktop sources are fallback-only: assign to full mix (Track 1) only, no separate tracks.
                 // Mute them here if the game hooked before they were added (the hook event missed them).
-                bool gameAlreadyHooked = GameCaptureSource.IsHooked;
+                bool gameAlreadyHooked = GameCaptureSource?.IsHooked == true;
                 foreach (var desktopSource in _desktopSources)
                 {
                     try
