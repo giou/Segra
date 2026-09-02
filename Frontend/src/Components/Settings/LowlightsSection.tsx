@@ -7,8 +7,12 @@ interface LowlightsSectionProps {
 }
 
 export default function LowlightsSection({ settings, updateSettings }: LowlightsSectionProps) {
-  const [draggingBefore, setDraggingBefore] = useState<number | null>(null);
-  const [draggingAfter, setDraggingAfter] = useState<number | null>(null);
+  const [localPaddingBefore, setLocalPaddingBefore] = useState<string>(
+    String(settings.lowlightPaddingBefore),
+  );
+  const [localPaddingAfter, setLocalPaddingAfter] = useState<string>(
+    String(settings.lowlightPaddingAfter),
+  );
 
   return (
     <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
@@ -42,70 +46,72 @@ export default function LowlightsSection({ settings, updateSettings }: Lowlights
           </label>
         </div>
 
-        <div className="pt-3 border-t border-custom space-y-4">
-          <div>
-            <span className="text-md mb-2 block">
-              Seconds Before Lowlight
-              {draggingBefore !== null && ` (${draggingBefore.toFixed(1)}s)`}
-            </span>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-base-content opacity-50 w-5 text-right shrink-0">
-                1
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={60}
-                step={0.5}
-                value={draggingBefore ?? settings.lowlightPaddingBefore}
-                onChange={(e) => setDraggingBefore(Number(e.target.value))}
-                onMouseDown={(e) => setDraggingBefore(Number(e.currentTarget.value))}
-                onMouseUp={(e) => {
-                  updateSettings({ lowlightPaddingBefore: Number(e.currentTarget.value) });
-                  setDraggingBefore(null);
-                }}
-                onTouchEnd={() => {
-                  updateSettings({
-                    lowlightPaddingBefore: draggingBefore ?? settings.lowlightPaddingBefore,
-                  });
-                  setDraggingBefore(null);
-                }}
-                className="range range-xs range-primary flex-1 [--range-fill:0]"
-              />
-              <span className="text-xs text-base-content opacity-50 w-7 shrink-0">60s</span>
+        <div className="pt-3 border-t border-custom">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="form-control w-full">
+              <label
+                htmlFor="lowlightPaddingBefore"
+                className="label text-base-content px-0 !block mb-1"
+              >
+                <span className="label-text">Before Lowlight</span>
+              </label>
+              <div className="join w-full">
+                <input
+                  id="lowlightPaddingBefore"
+                  type="number"
+                  name="lowlightPaddingBefore"
+                  value={localPaddingBefore}
+                  onChange={(e) => setLocalPaddingBefore(e.target.value)}
+                  onBlur={() => {
+                    const parsed = Number(localPaddingBefore);
+                    const value = Number.isFinite(parsed)
+                      ? Math.min(60, Math.max(1, parsed))
+                      : settings.lowlightPaddingBefore;
+                    setLocalPaddingBefore(String(value));
+                    updateSettings({ lowlightPaddingBefore: value });
+                  }}
+                  min={1}
+                  max={60}
+                  step={0.5}
+                  className="input input-bordered bg-base-200 join-item flex-1 w-full outline-none focus:border-base-400"
+                />
+                <span className="join-item flex items-center px-3 bg-base-200 border border-base-400 text-sm opacity-70">
+                  seconds
+                </span>
+              </div>
             </div>
-          </div>
 
-          <div>
-            <span className="text-md mb-2 block">
-              Seconds After Lowlight
-              {draggingAfter !== null && ` (${draggingAfter.toFixed(1)}s)`}
-            </span>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-base-content opacity-50 w-5 text-right shrink-0">
-                1
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={60}
-                step={0.5}
-                value={draggingAfter ?? settings.lowlightPaddingAfter}
-                onChange={(e) => setDraggingAfter(Number(e.target.value))}
-                onMouseDown={(e) => setDraggingAfter(Number(e.currentTarget.value))}
-                onMouseUp={(e) => {
-                  updateSettings({ lowlightPaddingAfter: Number(e.currentTarget.value) });
-                  setDraggingAfter(null);
-                }}
-                onTouchEnd={() => {
-                  updateSettings({
-                    lowlightPaddingAfter: draggingAfter ?? settings.lowlightPaddingAfter,
-                  });
-                  setDraggingAfter(null);
-                }}
-                className="range range-xs range-primary flex-1 [--range-fill:0]"
-              />
-              <span className="text-xs text-base-content opacity-50 w-7 shrink-0">60s</span>
+            <div className="form-control w-full">
+              <label
+                htmlFor="lowlightPaddingAfter"
+                className="label text-base-content px-0 !block mb-1"
+              >
+                <span className="label-text">After Lowlight</span>
+              </label>
+              <div className="join w-full">
+                <input
+                  id="lowlightPaddingAfter"
+                  type="number"
+                  name="lowlightPaddingAfter"
+                  value={localPaddingAfter}
+                  onChange={(e) => setLocalPaddingAfter(e.target.value)}
+                  onBlur={() => {
+                    const parsed = Number(localPaddingAfter);
+                    const value = Number.isFinite(parsed)
+                      ? Math.min(60, Math.max(1, parsed))
+                      : settings.lowlightPaddingAfter;
+                    setLocalPaddingAfter(String(value));
+                    updateSettings({ lowlightPaddingAfter: value });
+                  }}
+                  min={1}
+                  max={60}
+                  step={0.5}
+                  className="input input-bordered bg-base-200 join-item flex-1 w-full outline-none focus:border-base-400"
+                />
+                <span className="join-item flex items-center px-3 bg-base-200 border border-base-400 text-sm opacity-70">
+                  seconds
+                </span>
+              </div>
             </div>
           </div>
         </div>
