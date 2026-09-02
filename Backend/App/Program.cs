@@ -270,7 +270,44 @@ namespace Segra.Backend.App
                 // Ensure content folder exists
                 if (!Directory.Exists(Settings.Instance.ContentFolder))
                 {
-                    Directory.CreateDirectory(Settings.Instance.ContentFolder);
+                    try
+                    {
+                        Directory.CreateDirectory(Settings.Instance.ContentFolder);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Saved folder is unreachable (e.g. a drive that's no longer mounted);
+                        // fall back to the default so the app can still start.
+                        Log.Error(ex, $"Content folder '{Settings.Instance.ContentFolder}' is not accessible, falling back to default");
+                        var unreachableFolder = Settings.Instance.ContentFolder;
+                        Settings.Instance.ContentFolder = Shared.PathUtils.Normalize(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Segra"));
+                        Directory.CreateDirectory(Settings.Instance.ContentFolder);
+                        SettingsService.SaveSettings();
+                        _ = Task.Run(() => MessageService.ShowModal(
+                            "Recording folder unavailable",
+                            $"The recording folder '{unreachableFolder}' could not be accessed. Segra will use '{Settings.Instance.ContentFolder}' instead. You can change it in Settings.",
+                            "warning"));
+                    }
+                }
+
+                if (!Directory.Exists(Settings.Instance.CacheFolder))
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(Settings.Instance.CacheFolder);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, $"Cache folder '{Settings.Instance.CacheFolder}' is not accessible, falling back to default");
+                        var unreachableCacheFolder = Settings.Instance.CacheFolder;
+                        Settings.Instance.CacheFolder = Shared.PathUtils.Normalize(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Segra"));
+                        Directory.CreateDirectory(Settings.Instance.CacheFolder);
+                        SettingsService.SaveSettings();
+                        _ = Task.Run(() => MessageService.ShowModal(
+                            "Cache folder unavailable",
+                            $"The cache folder '{unreachableCacheFolder}' could not be accessed. Segra will use '{Settings.Instance.CacheFolder}' instead. You can change it in Settings.",
+                            "warning"));
+                    }
                 }
 
                 // Run data migrations

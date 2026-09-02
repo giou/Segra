@@ -244,12 +244,7 @@ export type VideoQualityPreset = 'low' | 'standard' | 'high' | 'custom';
 export type ClipQualityPreset = 'low' | 'standard' | 'high' | 'custom';
 
 export type MenuItemId =
-  | 'Full Sessions'
-  | 'Replay Buffer'
-  | 'Clips'
-  | 'Highlights'
-  | 'Lowlights'
-  | 'Settings';
+  'Full Sessions' | 'Replay Buffer' | 'Clips' | 'Highlights' | 'Lowlights' | 'Settings';
 
 export interface MenuItemPreference {
   id: MenuItemId;
@@ -332,6 +327,7 @@ export interface Settings {
   copyCompressSizesMb: number[]; // Hidden setting (no UI), sizes for "Copy as X MB"
   keybindings: Keybind[];
   games: GameSetting[];
+  autoRecordGames: boolean; // When false, don't auto-start recording when a game launches
   gameIntegrations: GameIntegrations;
   soundEffectsVolume: number; // Volume for UI sound effects (0.0 to 1.0)
   showNewBadgeOnVideos: boolean;
@@ -437,6 +433,7 @@ export const initialSettings: Settings = {
     { keys: [122], action: KeybindAction.TogglePreview, enabled: true }, // 122 is F11
   ],
   games: [],
+  autoRecordGames: true,
   gameIntegrations: {
     counterStrike2: { enabled: true },
     leagueOfLegends: { enabled: true },
