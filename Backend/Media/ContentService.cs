@@ -20,7 +20,7 @@ namespace Segra.Backend.Media
         /// Writes the metadata file for a video and returns the new content id, or null when it could not be written.
         /// The id is the file name of the metadata, thumbnail and waveform files.
         /// </summary>
-        public static async Task<string?> CreateMetadataFile(string filePath, Content.ContentType type, string game, List<Bookmark>? bookmarks = null, string? title = null, DateTime? createdAt = null, int? igdbId = null, bool isImported = false, List<string>? audioTrackNames = null, List<string>? audioTrackTypes = null, bool compressed = false, string? gameExePath = null)
+        public static async Task<string?> CreateMetadataFile(string filePath, Content.ContentType type, string game, List<Bookmark>? bookmarks = null, string? title = null, DateTime? createdAt = null, int? igdbId = null, bool isImported = false, List<string>? audioTrackNames = null, List<string>? audioTrackTypes = null, bool compressed = false, string? gameExePath = null, TimeSpan? fallbackDuration = null)
         {
             bookmarks ??= [];
             filePath = PathUtils.Normalize(filePath);
@@ -56,6 +56,14 @@ namespace Segra.Backend.Media
                 var (displaySize, sizeKb) = GetFileSize(filePath);
 
                 var duration = await GetVideoDurationAsync(filePath);
+                if (duration == TimeSpan.Zero && fallbackDuration.HasValue && fallbackDuration.Value > TimeSpan.Zero)
+                {
+                    // The media probe failed (e.g. timeout on a large file right after the
+                    // recording stopped). Prefer the known wall-clock duration over
+                    // persisting 00:00:00, which the UI would show forever.
+                    Log.Warning($"Using fallback duration {fallbackDuration.Value} for {filePath} (media probe failed)");
+                    duration = fallbackDuration.Value;
+                }
                 var metadataContent = new Content
                 {
                     Id = id,
@@ -493,6 +501,51 @@ namespace Segra.Backend.Media
             {
                 Log.Error($"Error getting video duration: {ex.Message}");
                 return TimeSpan.Zero;
+            }
+        }
+
+        /// <summary>
+        /// Re-probes videos whose stored duration is zero (the media probe failed when the
+        /// metadata was written) and persists the real value. Runs in the background after
+        /// the content load so a slow drive never blocks startup. Never throws.
+        /// </summary>
+        public static async Task BackfillMissingDurationsAsync(List<Content> contents)
+        {
+            try
+            {
+                bool changed = false;
+                foreach (var c in contents)
+                {
+                    if (c.Duration != TimeSpan.Zero) continue;
+                    if (string.IsNullOrEmpty(c.Id)) continue;
+                    if (string.IsNullOrEmpty(c.FilePath) || !File.Exists(c.FilePath)) continue;
+
+                    try
+                    {
+                        var duration = await GetVideoDurationAsync(c.FilePath);
+                        if (duration == TimeSpan.Zero) continue;
+
+                        var updated = await UpdateMetadataFile(FolderNames.GetMetadataFilePath(c.Type, c.Id), m => { m.Duration = duration; });
+                        if (updated == null) continue;
+
+                        c.Duration = duration;
+                        changed = true;
+                        Log.Information($"Backfilled duration {duration} for {c.FilePath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"Failed backfilling duration for {c.FilePath}: {ex.Message}");
+                    }
+                }
+
+                if (changed)
+                {
+                    AppState.Instance.SetContent(contents, sendToFrontend: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Duration backfill failed: {ex.Message}");
             }
         }
 

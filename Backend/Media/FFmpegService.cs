@@ -446,11 +446,15 @@ namespace Segra.Backend.Media
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-
             using var process = new Process { StartInfo = processStartInfo };
             process.Start();
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            // Cold process spawn plus a first read of a large mp4 on a slow drive
+            // routinely exceeds a couple of seconds (e.g. 2.5s for a 1.7GB file on
+            // 2026-09-04, killing all 3 duration probes and persisting 00:00:00).
+            // 15s keeps the failure mode for truly unreadable files without
+            // sacrificing healthy probes, which return in well under a second.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             try
             {
                 string output = await process.StandardError.ReadToEndAsync(cts.Token);

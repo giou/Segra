@@ -954,6 +954,10 @@ namespace Segra.Backend.Core
 
             AppState.Instance.SetContent(content, sendToFrontend);
 
+            // Repair entries whose duration probe failed at creation time (stored as
+            // 00:00:00). Background: a slow drive must never block the content load.
+            _ = ContentService.BackfillMissingDurationsAsync(content);
+
             // Honor sendToFrontend so a silent reload doesn't leak a state send via the folder size.
             Windows.Storage.StorageService.UpdateFolderSizeInState(sendToFrontend);
         }
