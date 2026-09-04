@@ -389,7 +389,7 @@ export default function StorageSettingsSection({
           />
           <span className="text-xs text-base-content/60 mt-1">
             {highlightEnabled
-              ? `Oldest highlights auto-delete when highlights exceed limit. Currently ${highlightUsageGb.toFixed(2)} GB.`
+              ? `Highlights auto-delete when exceeded. Currently ${highlightUsageGb.toFixed(2)} GB.`
               : 'Highlights are never auto-deleted. Edit the value then enable to set a cap.'}
           </span>
         </div>
@@ -418,7 +418,7 @@ export default function StorageSettingsSection({
           />
           <span className="text-xs text-base-content/60 mt-1">
             {lowlightEnabled
-              ? `Oldest lowlights auto-delete when lowlights exceed limit. Currently ${lowlightUsageGb.toFixed(2)} GB.`
+              ? `Lowlights auto-delete when exceeded. Currently ${lowlightUsageGb.toFixed(2)} GB.`
               : 'Lowlights are never auto-deleted. Edit the value then enable to set a cap.'}
           </span>
         </div>
