@@ -322,7 +322,7 @@ export default function ContentCard({
 
   const handleCreateLowlight = () => {
     const parameters: any = {
-      FileName: content!.fileName,
+      Id: content!.id,
     };
 
     sendMessageToBackend('CreateLowlight', parameters);

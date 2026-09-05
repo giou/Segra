@@ -17,14 +17,16 @@ namespace Segra.Backend.Media
         /// Creates a lowlight video from all lowlight-worthy bookmarks (Death, etc.).
         /// Uses stream copy for fast extraction without re-encoding.
         /// </summary>
-        public static async Task CreateLowlightFromBookmarks(string fileName, Action<int, string>? progressCallback = null)
+        public static async Task CreateLowlightFromBookmarks(string contentId, Action<int, string>? progressCallback = null)
         {
             try
             {
-                Content? content = AppState.Instance.Content.FirstOrDefault(x => x.FileName == fileName);
+                Log.Information($"Starting lowlight creation for: {contentId}");
+
+                Content? content = AppState.Instance.Content.FirstOrDefault(x => x.Id == contentId);
                 if (content == null)
                 {
-                    Log.Warning($"No content found matching fileName: {fileName}");
+                    Log.Warning($"No content found matching id: {contentId}");
                     return;
                 }
 
@@ -36,7 +38,7 @@ namespace Segra.Backend.Media
 
                 if (lowlightBookmarks.Count == 0)
                 {
-                    Log.Information($"No lowlight bookmarks found for: {fileName}");
+                    Log.Information($"No lowlight bookmarks found for: {content.FileName}");
                     progressCallback?.Invoke(-1, "No lowlight moments found in this session");
                     return;
                 }
@@ -103,7 +105,7 @@ namespace Segra.Backend.Media
 
                 // Create metadata, thumbnail, and waveform.
                 // Lowlights use stream-copy extract+concat, so they preserve the source's audio tracks.
-                string? lowlightId = await ContentService.CreateMetadataFile(outputFilePath, Content.ContentType.Lowlight, content.Game!, null, content.Title, igdbId: content.IgdbId, audioTrackNames: content.AudioTrackNames);
+                string? lowlightId = await ContentService.CreateMetadataFile(outputFilePath, Content.ContentType.Lowlight, content.Game!, null, content.Title, igdbId: content.IgdbId, audioTrackNames: content.AudioTrackNames, audioTrackTypes: content.AudioTrackTypes, gameExePath: content.GameExePath);
 
                 progressCallback?.Invoke(95, "Creating thumbnail...");
                 await ContentService.CreateThumbnail(outputFilePath, Content.ContentType.Lowlight, lowlightId);
@@ -111,15 +113,17 @@ namespace Segra.Backend.Media
                 progressCallback?.Invoke(98, "Creating waveform...");
                 await ContentService.CreateWaveformFile(outputFilePath, Content.ContentType.Lowlight, lowlightId);
 
-                // Reload content
-                await SettingsService.LoadContentFromFolderIntoState();
+                // Load silently then await the state send before "Done" removes the loading card, so the
+                // lowlight is on screen first (avoids a skeleton-removed-before-content flicker).
+                await SettingsService.LoadContentFromFolderIntoState(sendToFrontend: false);
+                await MessageService.SendStateToFrontend("Lowlight created");
 
                 progressCallback?.Invoke(100, "Done");
                 Log.Information($"Lowlight created successfully: {outputFilePath}");
             }
             catch (Exception ex)
             {
-                Log.Error(ex, $"Error creating lowlight for {fileName}");
+                Log.Error(ex, $"Error creating lowlight for {contentId}");
                 progressCallback?.Invoke(-1, $"Error: {ex.Message}");
             }
         }

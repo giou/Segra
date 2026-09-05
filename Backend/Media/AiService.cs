@@ -48,33 +48,33 @@ namespace Segra.Backend.Media
             }
         }
 
-        public static async Task CreateLowlight(string fileName)
+        public static async Task CreateLowlight(string contentId)
         {
             string lowlightId = Guid.NewGuid().ToString();
             Content? content = null;
 
             try
             {
-                Log.Information($"Starting lowlight creation for: {fileName}");
+                Log.Information($"Starting lowlight creation for: {contentId}");
 
-                content = AppState.Instance.Content.FirstOrDefault(x => x.FileName == fileName);
+                content = AppState.Instance.Content.FirstOrDefault(x => x.Id == contentId);
                 if (content == null)
                 {
-                    Log.Warning($"No content found matching fileName: {fileName}");
+                    Log.Warning($"No content found matching id: {contentId}");
                     return;
                 }
 
                 int momentCount = content.Bookmarks.Count(b => b.Type.IncludeInLowlight());
                 if (momentCount == 0)
                 {
-                    Log.Information($"No lowlight bookmarks found for: {fileName}");
+                    Log.Information($"No lowlight bookmarks found for: {content.FileName}");
                     await SendProgress(lowlightId, -1, "error", "No lowlight moments found in this session", content, "LowlightAiProgress");
                     return;
                 }
 
                 await SendProgress(lowlightId, 0, "processing", $"Found {momentCount} moments", content, "LowlightAiProgress");
 
-                await LowlightService.CreateLowlightFromBookmarks(fileName, async (progress, message) =>
+                await LowlightService.CreateLowlightFromBookmarks(contentId, async (progress, message) =>
                 {
                     string status = progress < 0 ? "error" : progress >= 100 ? "done" : "processing";
                     await SendProgress(lowlightId, progress, status, message, content, "LowlightAiProgress");
@@ -82,7 +82,7 @@ namespace Segra.Backend.Media
             }
             catch (Exception ex)
             {
-                Log.Error(ex, $"Error creating lowlight for {fileName}");
+                Log.Error(ex, $"Error creating lowlight for {contentId}");
                 if (content != null)
                 {
                     await SendProgress(lowlightId, -1, "error", $"Error: {ex.Message}", content, "LowlightAiProgress");

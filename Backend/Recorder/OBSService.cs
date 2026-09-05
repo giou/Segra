@@ -889,7 +889,7 @@ namespace Segra.Backend.Recorder
                         ? GetCaptureTargetDeviceId()
                         : ResolveGameHdrTargetDeviceId();
 
-                    if (HdrDetectionService.IsDisplayHdrActive(hdrTargetDeviceId))
+                    if (DisplayConfigService.IsDisplayHdrActive(hdrTargetDeviceId))
                     {
                         string userEncoderId = eff.Codec?.InternalEncoderId ?? string.Empty;
                         string? hdrEncoderId = EncoderInfo.FindHdrCapable(userEncoderId)?.Id;
@@ -1692,8 +1692,8 @@ namespace Segra.Backend.Recorder
             if (displays == null || displays.Count < 2)
                 return false;
 
-            bool fallbackHdr = HdrDetectionService.IsDisplayHdrActive(fallbackDeviceId);
-            return displays.Any(d => HdrDetectionService.IsDisplayHdrActive(d.DeviceId) != fallbackHdr);
+            bool fallbackHdr = DisplayConfigService.IsDisplayHdrActive(fallbackDeviceId);
+            return displays.Any(d => DisplayConfigService.IsDisplayHdrActive(d.DeviceId) != fallbackHdr);
         }
 #endif
 
@@ -2034,9 +2034,6 @@ namespace Segra.Backend.Recorder
                     return;
                 }
 
-                // Get the file path before nullifying the recording (FilePath is not null at this point because of the previous check)
-                string filePath = AppState.Instance.Recording.FilePath!;
-
                 // Get the bookmarks before nullifying the recording
                 List<Bookmark> bookmarks = AppState.Instance.Recording.Bookmarks;
 
@@ -2051,10 +2048,9 @@ namespace Segra.Backend.Recorder
                 }
 
                 // If the recording is not a replay buffer recording, AI is enabled, user is authenticated, and auto generate lowlights is enabled -> analyze the video!
-                if (Settings.Instance.EnableLowlights && Settings.Instance.AutoGenerateLowlights && !isReplayBufferMode && bookmarks.Any(b => b.Type.IncludeInLowlight()))
+                if (Settings.Instance.EnableLowlights && Settings.Instance.AutoGenerateLowlights && !isReplayBufferMode && sessionContentId != null && bookmarks.Any(b => b.Type.IncludeInLowlight()))
                 {
-                    string fileName = Path.GetFileNameWithoutExtension(filePath);
-                    _ = AiService.CreateLowlight(fileName);
+                    _ = AiService.CreateLowlight(sessionContentId);
                 }
             }
             finally

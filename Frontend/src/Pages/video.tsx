@@ -47,6 +47,7 @@ import {
 } from 'lucide-react';
 import SegmentCard from '../Components/SegmentCard';
 import { useAudioTracks } from '../Hooks/useAudioTracks';
+import { useNativeElementAudio } from '../Hooks/useNativeElementAudio';
 import { AnimatePresence, motion } from 'framer-motion';
 import Button from '../Components/Button';
 import { SECTION_ID_BY_CONTENT_TYPE, filterAndSortForSection } from '../Components/SectionView';
@@ -231,6 +232,9 @@ export default function VideoComponent({ video }: { video: Content }) {
 
   // Audio tracks
   const audioTracks = useAudioTracks(videoRef, video);
+  // Single-track content (clips, default recordings): route the video element's own audio
+  // through the native sink so Discord/OBS app-audio capture includes it.
+  useNativeElementAudio(videoRef, video);
   const [showAudioTracks, setShowAudioTracks] = useState(false);
   const [timelineAudioMenu, setTimelineAudioMenu] = useState<{
     segId: number;

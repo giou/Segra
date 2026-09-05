@@ -342,8 +342,8 @@ namespace Segra.Backend.App
         private static async Task HandleCreateLowlight(JsonElement message)
         {
             Log.Information($"{message}");
-            message.TryGetProperty("FileName", out JsonElement fileNameElement);
-            await AiService.CreateLowlight(fileNameElement.GetString()!);
+            message.TryGetProperty("Id", out JsonElement idElement);
+            await AiService.CreateLowlight(idElement.GetString()!);
         }
 
         public static async Task HandleDeleteContent(JsonElement message)
