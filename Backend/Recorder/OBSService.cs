@@ -553,14 +553,13 @@ namespace Segra.Backend.Recorder
             NvencCapsService.StartProbe();
 #endif
 
-            if (Obs.IsInitialized)
-                throw new Exception("Error: OBS is already initialized.");
-
-            // Start the log queue processor before setting the log handler
-            _ = Task.Run(ProcessLogQueueAsync);
-
             try
             {
+                if (Obs.IsInitialized)
+                    throw new Exception("Error: OBS is already initialized.");
+
+                // Start the log queue processor before setting the log handler
+                _ = Task.Run(ProcessLogQueueAsync);
                 // Initialize OBS using ObsKit.NET fluent API
 #if WINDOWS
                 string baseDir = AppContext.BaseDirectory;
@@ -663,6 +662,17 @@ namespace Segra.Backend.Recorder
                 _ = Task.Run(RecoveryService.CheckForOrphanedFilesAsync);
                 _ = GameDetectionService.StartAsync();
                 GameDetectionService.ForegroundHook.Start();
+            }
+            catch (DllNotFoundException ex)
+            {
+                Log.Error($"Failed to load an OBS native library (missing system dependency): {ex.Message}");
+                await MessageService.ShowModal(
+                    "Recorder Error",
+                    "Segra couldn't load the recorder's system libraries. Please install the latest Microsoft Visual C++ Redistributable (x64) and restart Segra.",
+                    "error",
+                    "Could not initialize recorder"
+                );
+                AppState.Instance.HasLoadedObs = true;
             }
             catch (Exception ex)
             {
