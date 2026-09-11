@@ -3,7 +3,6 @@ export type ContentType = 'Session' | 'Buffer' | 'Clip' | 'Highlight' | 'Lowligh
 export type RecordingMode = 'Session' | 'Buffer' | 'Hybrid';
 
 export type DisplayCaptureMethod = 'Auto' | 'DXGI' | 'WGC' | 'GameCaptureOnly';
-
 export type AudioOutputMode = 'All' | 'GameOnly' | 'GameAndDiscord';
 export type AudioTrackType = 'mix' | 'input' | 'output';
 
@@ -107,6 +106,7 @@ export interface Recording {
   endTime: Date;
   game: string;
   isUsingGameHook: boolean;
+  isUsingWindowCapture: boolean;
   coverImageId?: string;
 }
 
@@ -301,7 +301,6 @@ export interface Settings {
   forceMonoInputSources: boolean;
   inputNoiseSuppression: boolean;
   selectedDisplay: Display | null;
-  displayCaptureMethod: DisplayCaptureMethod;
   selectedOBSVersion: string | null; // null means automatic (latest non-beta)
   enableAi: boolean;
   enableLowlights: boolean;
@@ -311,6 +310,7 @@ export interface Settings {
   startupWindowMode: StartupWindowMode; // Window state when launched from startup
   closeButtonAction: CloseButtonAction;
   receiveBetaUpdates: boolean;
+  autoInstallUpdates: boolean; // Install a downloaded update once nothing records and the window is closed
   airplaneMode: boolean; // Hides cloud account/login/upload features and signs the user out
   recordingMode: RecordingMode;
   replayBufferDuration: number; // in seconds
@@ -392,7 +392,6 @@ export const initialSettings: Settings = {
   forceMonoInputSources: false,
   inputNoiseSuppression: true,
   selectedDisplay: null, // Default to null (auto-select)
-  displayCaptureMethod: 'Auto',
   selectedOBSVersion: null, // null means automatic (latest non-beta)
   enableAi: true,
   enableLowlights: false,
@@ -402,6 +401,7 @@ export const initialSettings: Settings = {
   startupWindowMode: 'Minimized',
   closeButtonAction: 'Minimize',
   receiveBetaUpdates: false,
+  autoInstallUpdates: true,
   airplaneMode: false,
   recordingMode: 'Hybrid',
   replayBufferDuration: 30,
