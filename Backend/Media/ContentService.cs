@@ -656,8 +656,20 @@ namespace Segra.Backend.Media
 
                 if (string.IsNullOrEmpty(id))
                 {
-                    Log.Warning($"No content id for {normalizedFilePath}, leaving metadata, thumbnail and waveform in place");
-                    return;
+                    // Cleanup matches files to AppState entries, which misses when the entry was
+                    // never loaded. Resolve via metadata scan so the video doesn't orphan sidecars.
+                    id = FindContentIdForFilePath(type, normalizedFilePath);
+                    if (!string.IsNullOrEmpty(id))
+                    {
+                        Log.Information($"Resolved content id {id} for {normalizedFilePath} via metadata scan");
+                    }
+                    else
+                    {
+                        // No id anywhere (id-less or legacy-named JSON): delete the JSON that
+                        // claims this video directly, if one exists.
+                        DeleteUnindexedMetadataForFile(type, normalizedFilePath);
+                        return;
+                    }
                 }
 
                 string metadataFilePath = FolderNames.GetMetadataFilePath(type, id);
@@ -708,6 +720,106 @@ namespace Segra.Backend.Media
             finally
             {
                 await SettingsService.LoadContentFromFolderIntoState(sendToFrontend);
+            }
+        }
+
+        /// <summary>
+        /// Deletes metadata JSONs that point at the given (deleted) video but carry no usable id,
+        /// so id-less or legacy-named entries don't survive their video. Returns true if it removed any.
+        /// </summary>
+        private static bool DeleteUnindexedMetadataForFile(Content.ContentType type, string normalizedFilePath)
+        {
+            bool removed = false;
+            string metadataFolder = FolderNames.GetMetadataFolderPath(type);
+            if (!Directory.Exists(metadataFolder))
+            {
+                Log.Warning($"No content id for {normalizedFilePath}, metadata folder missing");
+                return false;
+            }
+
+            foreach (var candidate in Directory.EnumerateFiles(metadataFolder, "*.json"))
+            {
+                if (Path.GetFileName(candidate).StartsWith('.')) continue;
+                try
+                {
+                    var existing = JsonSerializer.Deserialize<Content>(File.ReadAllText(candidate));
+                    if (existing == null) continue;
+                    if (!string.Equals(PathUtils.Normalize(existing.FilePath), normalizedFilePath, StringComparison.OrdinalIgnoreCase)) continue;
+                    File.Delete(candidate);
+                    Log.Information($"Deleted orphaned metadata (no id) for deleted video: {PathUtils.Normalize(candidate)}");
+                    removed = true;
+                }
+                catch
+                {
+                    // Unreadable JSON stays for the operator to inspect
+                }
+            }
+
+            if (!removed)
+                Log.Warning($"No content id for {normalizedFilePath}, leaving metadata, thumbnail and waveform in place");
+            return removed;
+        }
+
+        /// <summary>
+        /// Removes a metadata entry (plus id-keyed thumbnail/waveform) whose video is gone.
+        /// Guarded: skips when the video's drive isn't ready (offline disk would make every
+        /// entry look orphaned) and when the metadata file itself is fresh (in-flight operation).
+        /// Returns true when it pruned anything.
+        /// </summary>
+        public static bool TryPruneOrphanedMetadata(Content.ContentType type, string metadataFilePath, Content metadata)
+        {
+            if (string.IsNullOrEmpty(metadata.FilePath) || !IsDriveReady(metadata.FilePath))
+                return false;
+
+            try
+            {
+                // Live operations (compress/move/bookmark) rewrite the JSON; a fresh file means
+                // hands are still on this entry. Matches the cleanup's 1-hour in-use convention.
+                if (File.GetLastWriteTimeUtc(metadataFilePath) > DateTime.UtcNow.AddHours(-1))
+                    return false;
+            }
+            catch
+            {
+                return false;
+            }
+
+            try
+            {
+                if (File.Exists(metadataFilePath))
+                    File.Delete(metadataFilePath);
+
+                if (!string.IsNullOrEmpty(metadata.Id))
+                {
+                    string thumbnailFilePath = FolderNames.GetThumbnailFilePath(type, metadata.Id);
+                    if (File.Exists(thumbnailFilePath))
+                        File.Delete(thumbnailFilePath);
+                    string waveformFilePath = FolderNames.GetWaveformFilePath(type, metadata.Id);
+                    if (File.Exists(waveformFilePath))
+                        File.Delete(waveformFilePath);
+                }
+
+                Log.Information($"Pruned orphaned metadata {metadata.Id} ({metadata.Game}): video missing at '{metadata.FilePath}'");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Failed pruning orphaned metadata {metadataFilePath}: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool IsDriveReady(string filePath)
+        {
+            try
+            {
+                string? root = Path.GetPathRoot(filePath);
+                if (string.IsNullOrEmpty(root)) return false;
+                return new DriveInfo(root.Replace('/', '\\')).IsReady;
+            }
+            catch
+            {
+                // UNC or exotic roots: can't prove the disk is online, so don't prune.
+                return false;
             }
         }
 

@@ -916,10 +916,14 @@ namespace Segra.Backend.Core
 
                             if (string.IsNullOrEmpty(metadata.FilePath) || !File.Exists(metadata.FilePath))
                             {
-                                // No auto-delete: the recording drive (often external/removable) may
-                                // just be offline; deleting here would destroy the library on a
-                                // transient disconnect. Entry reappears when the drive is back.
-                                Log.Warning($"Skipping orphaned metadata {metadata.Id} ({metadata.Game}): video missing at '{metadata.FilePath}' (metadata: {serializedMetadataFilePath})");
+                                // Video gone: prune the stray JSON (+ id-keyed sidecars) so deleted
+                                // videos stop reappearing as warnings. TryPruneOrphanedMetadata refuses
+                                // when the drive isn't ready or the JSON is fresh, in which case the
+                                // entry is kept and still just skipped.
+                                if (!ContentService.TryPruneOrphanedMetadata(contentType, serializedMetadataFilePath, metadata))
+                                {
+                                    Log.Warning($"Skipping orphaned metadata {metadata.Id} ({metadata.Game}): video missing at '{metadata.FilePath}' (metadata: {serializedMetadataFilePath})");
+                                }
                                 continue;
                             }
 
