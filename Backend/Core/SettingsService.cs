@@ -162,8 +162,13 @@ namespace Segra.Backend.Core
 
                 Log.Information("Settings loaded from {0}", SettingsFilePath);
 
-                // The file has been read, so forcing this save is safe even though
-                // Program.Main hasn't set hasLoadedInitialSettings yet.
+                // The file has been fully read, so mark loaded BEFORE the forced save below.
+                // Property setters during the bulk update fire background tasks (e.g. ContentFolder's
+                // content reload) whose trailing SaveSettings() can land while the forced save is still
+                // serializing; without this they trip the not-loaded guard and drop a save.
+                // (Program.Main sets the flag again after LoadSettings returns; that covers the
+                // first-run path that returns early when no settings file exists.)
+                Program.hasLoadedInitialSettings = true;
                 Settings.Instance.EndBulkUpdateAndSaveSettings(force: true);
                 return true;
             }
