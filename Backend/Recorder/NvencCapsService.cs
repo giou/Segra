@@ -59,6 +59,12 @@ namespace Segra.Backend.Recorder
 
         private static string TestExePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "obs-nvenc-test.exe");
 
+        // v2 invalidates caches written by the legacy-only parser, which stored
+        // supported=false for the old per-adapter exe output (OBS 30.1.1's 25KB
+        // obs-nvenc-test.exe prints "[0] is_nvidia=..." with no [general] section).
+        private const string CacheFormatVersion = "v2";
+
+
         /// <summary>
         /// Starts loading/probing capabilities in the background. No-op on non-NVIDIA systems
         /// or if already started. Must be called after the OBS bundle is installed since the
@@ -101,7 +107,13 @@ namespace Segra.Backend.Recorder
                 return null;
             }
 
-            if (!caps.Codecs.TryGetValue(codec, out var codecCaps) || !codecCaps.Supported)
+            if (!caps.Codecs.TryGetValue(codec, out var codecCaps))
+            {
+                Log.Warning($"NVENC probe has no data for codec {codec} (legacy probe exe reports no b-frame counts), leaving b-frame defaults for {encoderId}");
+                return null;
+            }
+
+            if (!codecCaps.Supported)
             {
                 Log.Warning($"NVENC probe reports codec {codec} as unsupported, leaving b-frame defaults for {encoderId}");
                 return null;
@@ -199,7 +211,8 @@ namespace Segra.Backend.Recorder
         /// <summary>
         /// Builds a fingerprint from all video controllers (device id + driver version) plus the
         /// test executable's timestamp/size, so the cached result is re-probed after a GPU swap,
-        /// driver update, or OBS update.
+        /// driver update, or OBS update. Prefixed with the parser version so parser fixes
+        /// invalidate stale caches even when hardware and exe are unchanged.
         /// </summary>
         private static string GetFingerprint(string exePath)
         {
@@ -222,7 +235,7 @@ namespace Segra.Backend.Recorder
             var exeInfo = new FileInfo(exePath);
             parts.Add($"exe:{exeInfo.LastWriteTimeUtc.Ticks}|{exeInfo.Length}");
 
-            return string.Join(";", parts);
+            return CacheFormatVersion + ";" + string.Join(";", parts);
         }
 
         private static NvencCaps? TryLoadCache(string fingerprint)
@@ -307,10 +320,15 @@ namespace Segra.Backend.Recorder
         }
 
         /// <summary>
-        /// Parses the INI-formatted stdout of obs-nvenc-test: a [general] section with
-        /// nvenc_supported, then [h264]/[hevc]/[av1] sections with codec_supported, bframes etc.
+        /// Parses obs-nvenc-test stdout. Two formats exist:
+        /// - New (OBS 32.x, ~98KB exe): [general] with nvenc_supported, then [h264]/[hevc]/[av1]
+        ///   sections with codec_supported and bframes. Per-codec b-frame clamping uses this.
+        /// - Legacy (OBS 30.1.1, 25KB exe): per-adapter [0]/[1]... sections with
+        ///   is_nvidia/supports_av1 and no b-frame data. Yields supported=true with h264/hevc
+        ///   left absent (= unknown, callers keep OBS defaults) so it never caches a false negative.
+        /// Returns null for unrecognized output so the next launch retries instead of caching garbage.
         /// </summary>
-        private static NvencCaps ParseTestOutput(string output, string fingerprint)
+        private static NvencCaps? ParseTestOutput(string output, string fingerprint)
         {
             var sections = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
             string currentSection = "general";
@@ -336,37 +354,78 @@ namespace Segra.Backend.Recorder
                     section = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     sections[currentSection] = section;
                 }
-                section[line[..eq]] = line[(eq + 1)..];
+                section[line[..eq].Trim()] = line[(eq + 1)..].Trim();
             }
 
-            var caps = new NvencCaps
+            if (sections.ContainsKey("general"))
             {
-                Fingerprint = fingerprint,
-                ProbedAt = DateTime.UtcNow,
-                NvencSupported = sections.TryGetValue("general", out var general) &&
-                                 general.TryGetValue("nvenc_supported", out string? supported) &&
-                                 supported.Equals("true", StringComparison.OrdinalIgnoreCase),
-            };
-
-            if (!caps.NvencSupported && general != null && general.TryGetValue("reason", out string? reason))
-            {
-                Log.Warning($"obs-nvenc-test reports NVENC unsupported: {reason}");
-            }
-
-            foreach (string codec in new[] { "h264", "hevc", "av1" })
-            {
-                var codecCaps = new CodecCaps();
-                if (sections.TryGetValue(codec, out var section))
+                var caps = new NvencCaps
                 {
-                    codecCaps.Supported = section.TryGetValue("codec_supported", out string? cs) &&
-                                          (cs == "1" || cs.Equals("true", StringComparison.OrdinalIgnoreCase));
-                    if (section.TryGetValue("bframes", out string? bf) && int.TryParse(bf, out int bframes))
-                        codecCaps.BFrames = bframes;
+                    Fingerprint = fingerprint,
+                    ProbedAt = DateTime.UtcNow,
+                    NvencSupported = sections.TryGetValue("general", out var general) &&
+                                     general.TryGetValue("nvenc_supported", out string? supported) &&
+                                     supported.Equals("true", StringComparison.OrdinalIgnoreCase),
+                };
+
+                if (!caps.NvencSupported && general != null && general.TryGetValue("reason", out string? reason))
+                {
+                    Log.Warning($"obs-nvenc-test reports NVENC unsupported: {reason}");
                 }
-                caps.Codecs[codec] = codecCaps;
+
+                foreach (string codec in new[] { "h264", "hevc", "av1" })
+                {
+                    var codecCaps = new CodecCaps();
+                    if (sections.TryGetValue(codec, out var section))
+                    {
+                        codecCaps.Supported = section.TryGetValue("codec_supported", out string? cs) &&
+                                              (cs == "1" || cs.Equals("true", StringComparison.OrdinalIgnoreCase));
+                        if (section.TryGetValue("bframes", out string? bf) && int.TryParse(bf, out int bframes))
+                            codecCaps.BFrames = bframes;
+                    }
+                    caps.Codecs[codec] = codecCaps;
+                }
+
+                return caps;
             }
 
-            return caps;
+            bool seenLegacyAdapter = false;
+            bool anyNvidia = false;
+            bool anyAv1 = false;
+            foreach (var entry in sections.Values)
+            {
+                if (!entry.ContainsKey("is_nvidia"))
+                    continue;
+                seenLegacyAdapter = true;
+                if (entry.TryGetValue("is_nvidia", out string? isNvidia) &&
+                    isNvidia.Equals("true", StringComparison.OrdinalIgnoreCase))
+                    anyNvidia = true;
+                if (entry.TryGetValue("supports_av1", out string? supportsAv1) &&
+                    supportsAv1.Equals("true", StringComparison.OrdinalIgnoreCase))
+                    anyAv1 = true;
+            }
+
+            if (seenLegacyAdapter)
+            {
+                var legacy = new NvencCaps
+                {
+                    Fingerprint = fingerprint,
+                    ProbedAt = DateTime.UtcNow,
+                    NvencSupported = anyNvidia,
+                };
+                // AV1 support is reported per-adapter even by the legacy exe; h264/hevc
+                // b-frame counts are not, so they stay absent (= unknown, GetMaxBFrames
+                // keeps OBS defaults instead of caching a false negative).
+                legacy.Codecs["av1"] = new CodecCaps { Supported = anyAv1, BFrames = 0 };
+                if (anyNvidia)
+                    Log.Warning("obs-nvenc-test.exe uses the legacy per-adapter output (no b-frame data); NVENC marked supported with unknown b-frame limits. Upgrade the OBS bundle for per-codec b-frame clamping.");
+                else
+                    Log.Warning("obs-nvenc-test reports no NVIDIA adapter (legacy output).");
+                return legacy;
+            }
+
+            Log.Warning($"obs-nvenc-test.exe produced unrecognized output ({output.Length} chars), ignoring so the next launch retries");
+            return null;
         }
 
         private static string Summarize(NvencCaps caps)

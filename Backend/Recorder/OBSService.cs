@@ -2981,6 +2981,68 @@ namespace Segra.Backend.Recorder
             }
         }
 
+#if WINDOWS
+        /// <summary>
+        /// Deletes the obs-browser plugin leftovers from the Windows OBS bundle. The shipped
+        /// 30.1.1 zip contains obs-browser.dll + its CEF helpers but no libcef.dll, so the module
+        /// can never load (error 126) and the helpers only spam "not an OBS plugin" warnings.
+        /// Segra is a headless recorder with no browser source; the newer segra-built bundles
+        /// already exclude it. Runs on every startup (also fixes existing installs) before OBS init.
+        /// </summary>
+        private static void PruneUnneededObsPlugins(string baseDir)
+        {
+            string pluginDir = Path.Combine(baseDir, "obs-plugins", "64bit");
+            string[] files =
+            {
+                "obs-browser.dll", "obs-browser-page.exe",
+                "obs-browser.pdb", "obs-browser-page.pdb",
+                "chrome_elf.dll", "libEGL.dll", "libGLESv2.dll",
+                "chrome_100_percent.pak", "chrome_200_percent.pak",
+                "icudtl.dat", "resources.pak", "snapshot_blob.bin", "v8_context_snapshot.bin",
+            };
+            string[] dirs =
+            {
+                Path.Combine(pluginDir, "locales"),
+                Path.Combine(baseDir, "data", "obs-plugins", "obs-browser"),
+            };
+
+            int removed = 0;
+            foreach (string file in files)
+            {
+                try
+                {
+                    string path = Path.Combine(pluginDir, file);
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                        removed++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug($"Failed to prune unused OBS file {file}: {ex.Message}");
+                }
+            }
+            foreach (string dir in dirs)
+            {
+                try
+                {
+                    if (Directory.Exists(dir))
+                    {
+                        Directory.Delete(dir, true);
+                        removed++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug($"Failed to prune unused OBS directory {dir}: {ex.Message}");
+                }
+            }
+            if (removed > 0)
+                Log.Information($"Pruned {removed} unused obs-browser files that can never load without libcef");
+        }
+#endif
+
         public static bool IsOBSInstalled()
         {
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -3174,6 +3236,7 @@ namespace Segra.Backend.Recorder
             if (IsOBSInstalled() && !Settings.Instance.PendingOBSUpdate)
             {
                 Log.Information("OBS is installed");
+                PruneUnneededObsPlugins(AppDomain.CurrentDomain.BaseDirectory);
                 // Refresh versions for the UI in the background; don't stall init on this network call.
                 _ = AvailableOBSVersionsAsync();
                 return;
@@ -3312,6 +3375,7 @@ namespace Segra.Backend.Recorder
                 try
                 {
                     ZipFile.ExtractToDirectory(zipPath, currentDirectory, true);
+                    PruneUnneededObsPlugins(currentDirectory);
 
                     if (Settings.Instance.PendingOBSUpdate)
                     {

@@ -903,9 +903,18 @@ namespace Segra.Backend.Core
                             var metadataContent = File.ReadAllText(serializedMetadataFilePath);
                             var metadata = JsonSerializer.Deserialize<Content>(metadataContent);
 
-                            if (metadata == null || !File.Exists(metadata.FilePath))
+                            if (metadata == null)
                             {
-                                Log.Warning($"Invalid or missing metadata for file: {serializedMetadataFilePath}");
+                                Log.Warning($"Skipping unreadable metadata (null after deserialize): {serializedMetadataFilePath}");
+                                continue;
+                            }
+
+                            if (string.IsNullOrEmpty(metadata.FilePath) || !File.Exists(metadata.FilePath))
+                            {
+                                // No auto-delete: the recording drive (often external/removable) may
+                                // just be offline; deleting here would destroy the library on a
+                                // transient disconnect. Entry reappears when the drive is back.
+                                Log.Warning($"Skipping orphaned metadata {metadata.Id} ({metadata.Game}): video missing at '{metadata.FilePath}' (metadata: {serializedMetadataFilePath})");
                                 continue;
                             }
 
