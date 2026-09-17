@@ -15,6 +15,7 @@ using Segra.Backend.Windows.Storage;
 using System.Reflection;
 using System.Runtime.InteropServices;
 #if WINDOWS
+using Segra.Backend.Windows.Input;
 using Segra.Backend.Windows.Power;
 using Segra.Backend.Windows.WebView2;
 #endif
@@ -74,6 +75,16 @@ namespace Segra.Backend.App
         [STAThread]
         static void Main(string[] args)
         {
+#if WINDOWS
+            // Elevated helper mode: install the UIAccess hotkey broker, then exit. Runs before logging
+            // (the main instance holds the log file) and before the single-instance handshake.
+            if (args.Contains(Segra.Backend.Windows.Input.HotkeyBroker.HotkeyBrokerInstaller.InstallArgument))
+            {
+                Environment.ExitCode = Segra.Backend.Windows.Input.HotkeyBroker.HotkeyBrokerInstaller.RunInstallElevated();
+                return;
+            }
+#endif
+
             PlatformServices.Initialize();
 
 #if WINDOWS
@@ -563,6 +574,10 @@ namespace Segra.Backend.App
             // Shutdown OBS if it was initialized
             OBSService.TryShutdown(TimeSpan.FromSeconds(recorderLost ? 5 : 10));
 
+#if WINDOWS
+            KeybindCaptureService.ShutdownBroker();
+#endif
+
             Log.CloseAndFlush(); // Ensure all logs are written before the application exits
 
             // Release the mutex when closing (only if we own it)
@@ -760,7 +775,8 @@ namespace Segra.Backend.App
                 .RegisterWebMessageReceivedHandler((sender, args) =>
                 {
                     Window = (PhotinoWindow)sender!;
-                    _ = MessageService.HandleMessage(args.Message);
+                    // Web messages arrive on the UI thread; keep handlers off it so a blocking call can't freeze the window.
+                    _ = Task.Run(() => MessageService.HandleMessage(args.Message));
                 })
                 .Load(appUrl!);
 

@@ -38,6 +38,7 @@ namespace Segra.Backend.Core.Models
         private string _encoder = "gpu";
         private Codec? _codec = null; // Set in SelectDefaultCodec()
         private string? _selectedOBSVersion = null; // null means automatic (latest non-beta)
+        private string? _hotkeyBrokerDeclinedVersion = null; // bundled broker version whose install was declined or failed
         private bool _pendingOBSUpdate = false;
         private int _storageLimit = 100;
         private int? _highlightStorageLimit = null;
@@ -990,6 +991,21 @@ namespace Segra.Backend.Core.Models
             }
         }
 
+        // Backend-owned: set when the automatic hotkey broker install is declined or fails, so the
+        // prompt is not repeated for the same broker version. Not applied from frontend updates.
+        [JsonPropertyName("hotkeyBrokerDeclinedVersion")]
+        public string? HotkeyBrokerDeclinedVersion
+        {
+            get => _hotkeyBrokerDeclinedVersion;
+            set
+            {
+                if (_hotkeyBrokerDeclinedVersion != value)
+                {
+                    _hotkeyBrokerDeclinedVersion = value;
+                }
+            }
+        }
+
         [JsonPropertyName("pendingOBSUpdate")]
         public bool PendingOBSUpdate
         {
@@ -1571,5 +1587,8 @@ namespace Segra.Backend.Core.Models
 
         [JsonPropertyName("gta")]
         public GameIntegrationSettings Gta { get; set; } = new GameIntegrationSettings(true);
+
+        [JsonPropertyName("rainbowSixSiege")]
+        public GameIntegrationSettings RainbowSixSiege { get; set; } = new GameIntegrationSettings(true);
     }
 }

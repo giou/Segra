@@ -36,6 +36,14 @@ export interface OBSVersion {
   url: string;
 }
 
+export interface HotkeyBrokerStatus {
+  installed: boolean;
+  upToDate: boolean;
+  connected: boolean;
+  // An install or update is needed and the automatic attempt was declined or failed.
+  actionRequired: boolean;
+}
+
 export interface State {
   gpuVendor: GpuVendor;
   preRecording?: PreRecording;
@@ -55,6 +63,8 @@ export interface State {
   recordingDriveUsedGb: number | null;
   recordingDriveFreeGb: number | null;
   cacheFolder: string;
+  // Windows only; the backend leaves it unset elsewhere.
+  hotkeyBroker?: HotkeyBrokerStatus | null;
 }
 
 export enum GpuVendor {
@@ -209,6 +219,7 @@ export interface GameIntegrations {
   runescapeDragonwilds: GameIntegrationSettings;
   warThunder: GameIntegrationSettings;
   gta: GameIntegrationSettings;
+  rainbowSixSiege: GameIntegrationSettings;
 }
 
 export type ClipEncoder = 'gpu' | 'cpu';
@@ -302,6 +313,7 @@ export interface Settings {
   inputNoiseSuppression: boolean;
   selectedDisplay: Display | null;
   selectedOBSVersion: string | null; // null means automatic (latest non-beta)
+  hotkeyBrokerDeclinedVersion: string | null; // backend-owned, mirrored only
   enableAi: boolean;
   enableLowlights: boolean;
   autoGenerateHighlights: boolean;
@@ -393,6 +405,7 @@ export const initialSettings: Settings = {
   inputNoiseSuppression: true,
   selectedDisplay: null, // Default to null (auto-select)
   selectedOBSVersion: null, // null means automatic (latest non-beta)
+  hotkeyBrokerDeclinedVersion: null,
   enableAi: true,
   enableLowlights: false,
   autoGenerateHighlights: true,
@@ -453,6 +466,7 @@ export const initialSettings: Settings = {
     runescapeDragonwilds: { enabled: true },
     warThunder: { enabled: true },
     gta: { enabled: true },
+    rainbowSixSiege: { enabled: true },
   },
 };
 

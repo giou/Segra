@@ -13,6 +13,9 @@ using System.Net.WebSockets;
 using Segra.Backend.Recorder;
 using Segra.Backend.Core.Models;
 using Segra.Backend.Windows.Storage;
+#if WINDOWS
+using Segra.Backend.Windows.Input.HotkeyBroker;
+#endif
 
 namespace Segra.Backend.App
 {
@@ -148,6 +151,11 @@ namespace Segra.Backend.App
                             Log.Information("CheckForUpdates command received.");
                             _ = Task.Run(() => UpdateService.UpdateAppIfNecessary(forceCheck: true));
                             break;
+#if WINDOWS
+                        case "InstallHotkeyBroker":
+                            _ = Task.Run(HotkeyBrokerSetup.InstallAsync);
+                            break;
+#endif
                         case "DeleteContent":
                             root.TryGetProperty("Parameters", out JsonElement deleteContentParameterElement);
                             _ = Task.Run(() => HandleDeleteContent(deleteContentParameterElement));
@@ -247,7 +255,7 @@ namespace Segra.Backend.App
                             _ = Task.Run(() => OBSService.StartRecording(startManually: true));
                             break;
                         case "StopRecording":
-                            _ = Task.Run(OBSService.StopRecording);
+                            _ = Task.Run(() => OBSService.StopRecording());
                             break;
                         case "RefreshStorageStats":
                             StorageService.UpdateRecordingDriveSpaceInState();
