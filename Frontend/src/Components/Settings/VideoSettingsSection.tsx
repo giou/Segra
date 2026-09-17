@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import DropdownSelect from '../DropdownSelect';
-import { Settings as SettingsType, VideoQualityPreset } from '../../Models/types';
+import {
+  Settings as SettingsType,
+  VideoQualityPreset,
+  DisplayCaptureMethod,
+} from '../../Models/types';
 import { sendMessageToBackend } from '../../Utils/MessageUtils';
 import { useAppState } from '../../Context/AppStateContext';
 
@@ -484,13 +488,17 @@ export default function VideoSettingsSection({
               </div>
 
               {monitorSelectionField}
+              {captureMethodField}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {settings.videoQualityPreset !== 'custom' && (
-        <div className="grid grid-cols-2 gap-4 mt-3">{monitorSelectionField}</div>
+        <div className="grid grid-cols-2 gap-4 mt-3">
+          {monitorSelectionField}
+          {captureMethodField}
+        </div>
       )}
 
       {/* 4:3 Stretch Option */}

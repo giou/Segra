@@ -73,7 +73,6 @@ namespace Segra.Backend.Recorder
         private static ApplicationAudioCapture? _gameAudioSource;
         private static readonly List<AudioInputCapture> _micSources = [];
         private static readonly List<AudioOutputCapture> _desktopSources = [];
-        private static ApplicationAudioCapture? _gameAudioSource = null;
         private static readonly List<(string Name, string Window, Source Source)> _voiceChatSources = [];
 
         // Mixer mask of the shared "Voice Chat" track, so sources created mid-recording land on the same track

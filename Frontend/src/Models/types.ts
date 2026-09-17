@@ -312,6 +312,7 @@ export interface Settings {
   forceMonoInputSources: boolean;
   inputNoiseSuppression: boolean;
   selectedDisplay: Display | null;
+  displayCaptureMethod: DisplayCaptureMethod;
   selectedOBSVersion: string | null; // null means automatic (latest non-beta)
   hotkeyBrokerDeclinedVersion: string | null; // backend-owned, mirrored only
   enableAi: boolean;
@@ -404,6 +405,7 @@ export const initialSettings: Settings = {
   forceMonoInputSources: false,
   inputNoiseSuppression: true,
   selectedDisplay: null, // Default to null (auto-select)
+  displayCaptureMethod: 'Auto',
   selectedOBSVersion: null, // null means automatic (latest non-beta)
   hotkeyBrokerDeclinedVersion: null,
   enableAi: true,
