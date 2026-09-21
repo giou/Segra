@@ -10,59 +10,6 @@ namespace Segra.Backend.Windows.Audio
 
         public static List<AudioDevice> GetOutputDevices() => GetDevices(DataFlow.Render, Role.Console);
 
-        /// <summary>
-        /// Returns the sample rate (Hz) of the default render device's mix format, or 48000
-        /// when it cannot be determined or is a rate OBS shouldn't be driven at.
-        /// Games render to the default (Console role) device, and in WASAPI shared mode their
-        /// audio session runs at exactly this mix rate. OBS requests its project rate from
-        /// game capture's process loopback, so matching the mix rate avoids the Windows audio
-        /// engine resampling the game stream — its resampler audibly rings on rate mismatch.
-        /// This probe touches WASAPI COM which can block indefinitely if the audio service is
-        /// hung, so it is time-boxed and never throws.
-        /// </summary>
-        public static int GetDefaultOutputSampleRate()
-        {
-            const int fallback = 48000;
-            try
-            {
-                // Run the WASAPI probe on a separate thread and time-box it — a hung audio
-                // service/device would otherwise stall OBS startup forever ("Starting OBS").
-                var probe = Task.Run(() =>
-                {
-                    try
-                    {
-                        using var enumerator = new MMDeviceEnumerator();
-                        using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console);
-                        if (defaultDevice == null) return fallback;
-                        using var audioClient = defaultDevice.AudioClient;
-                        if (audioClient == null) return fallback;
-                        var fmt = audioClient.MixFormat;
-                        if (fmt == null) return fallback;
-                        int sampleRate = fmt.SampleRate;
-                        // Only drive OBS at rates it is routinely used with; anything else (e.g. an
-                        // exotic 32 kHz endpoint) falls back to 48 kHz, the Windows/industry default.
-                        return sampleRate is 44100 or 48000 or 88200 or 96000 or 176400 or 192000
-                            ? sampleRate
-                            : fallback;
-                    }
-                    catch
-                    {
-                        return fallback;
-                    }
-                });
-
-                if (!probe.Wait(TimeSpan.FromSeconds(1.5)))
-                    return fallback;
-
-                return probe.Result;
-            }
-            catch
-            {
-                // No default device, or COM failure — 48 kHz is the safest fallback.
-                return fallback;
-            }
-        }
-
         private static string GetCleanDeviceName(string friendlyName)
         {
             // If it's Voicemeeter, Elgato, GoXLR or BEACN, return the original name

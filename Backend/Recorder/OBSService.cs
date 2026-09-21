@@ -24,7 +24,6 @@ using System.Text.RegularExpressions;
 using static Segra.Backend.App.MessageService;
 using static Segra.Backend.Shared.GeneralUtils;
 #if WINDOWS
-using Segra.Backend.Windows.Audio;
 using Segra.Backend.Windows.Display;
 #endif
 
@@ -642,37 +641,6 @@ namespace Segra.Backend.Recorder
                 string obsDataPath = Environment.GetEnvironmentVariable("SEGRA_OBS_DATA_PATH") ?? "./data/libobs/";
                 Log.Information($"Linux OBS runtime: data='{obsDataPath}', modules='{obsModulePath}'");
 #endif
-                // Match the default render device's mix format so game capture's WASAPI
-                // process loopback needs no engine-side resampling (its resampler audibly
-                // rings/metallics on rate mismatch, e.g. 48k games into a 44.1k project).
-                // OBS's own resampler handles every other source (mics, desktop loopbacks),
-                // so this rate only has to match where the game's audio session actually runs.
-                int audioSampleRate = 48000;
-#if WINDOWS
-                try
-                {
-                    // The WASAPI probe can block indefinitely if the audio service/device is hung —
-                    // don't let that stall OBS startup ("Starting OBS" hang). Time-box it and
-                    // fall back to 48 kHz, the Windows/industry default.
-                    var probeTask = Task.Run(() => AudioDeviceService.GetDefaultOutputSampleRate());
-                    var completed = await Task.WhenAny(probeTask, Task.Delay(TimeSpan.FromSeconds(2)));
-                    if (completed == probeTask)
-                    {
-                        audioSampleRate = await probeTask;
-                    }
-                    else
-                    {
-                        Log.Warning("Audio sample rate probe timed out after 2s, using fallback 48000 Hz");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning($"Audio sample rate probe failed: {ex.Message}, using fallback 48000 Hz");
-                    audioSampleRate = 48000;
-                }
-#endif
-                Log.Information($"OBS audio sample rate: {audioSampleRate} Hz (default render device mix format, 48 kHz fallback)");
-
                 _obsContext = Obs.Initialize(config =>
                 {
                     config
@@ -686,7 +654,7 @@ namespace Segra.Backend.Recorder
                             .Resolution(1920, 1080)
                             .Fps(60))
                         .WithAudio(a => a
-                            .WithSampleRate((uint)audioSampleRate)
+                            .WithSampleRate(44100)
                             .WithSpeakers(SpeakerLayout.Stereo))
                         .WithLogging((level, message) =>
                         {
@@ -2271,24 +2239,6 @@ namespace Segra.Backend.Recorder
                 DisposeDisplaySource();
                 DisposeWindowCaptureSource();
 
-                // Switch output audio: mute desktop sources and unmute game/voice chat sources
-                var audioOutputMode = Settings.Instance.AudioOutputMode;
-                if (audioOutputMode != AudioOutputMode.All && _gameAudioSource != null)
-                {
-                    foreach (var desktopSource in _desktopSources)
-                    {
-                        try { desktopSource.IsMuted = true; }
-                        catch (Exception ex) { Log.Warning($"Failed to mute desktop source: {ex.Message}"); }
-                    }
-                    Log.Information("Muted desktop audio sources (game hooked, using capture_audio)");
-
-                    foreach (var (voiceName, _, voiceSource) in _voiceChatSources)
-                    {
-                        try { voiceSource.IsMuted = false; Log.Information($"Unmuted {voiceName} audio source (game hooked)"); }
-                        catch (Exception ex) { Log.Warning($"Failed to unmute {voiceName} source: {ex.Message}"); }
-                    }
-                }
-
                 if (AppState.Instance.Recording != null)
                 {
                     AppState.Instance.Recording.IsUsingGameHook = true;
@@ -2420,24 +2370,6 @@ namespace Segra.Backend.Recorder
         {
             // IsHooked is now managed by GameCapture automatically
             Log.Information("Game unhooked.");
-
-            // Switch output audio back: unmute desktop sources and mute voice chat sources
-            var audioOutputMode = Settings.Instance.AudioOutputMode;
-            if (audioOutputMode != AudioOutputMode.All && _gameAudioSource != null)
-            {
-                foreach (var desktopSource in _desktopSources)
-                {
-                    try { desktopSource.IsMuted = false; }
-                    catch (Exception ex) { Log.Warning($"Failed to unmute desktop source: {ex.Message}"); }
-                }
-                Log.Information("Unmuted desktop audio sources (game unhooked, falling back to desktop audio)");
-
-                foreach (var (voiceName, _, voiceSource) in _voiceChatSources)
-                {
-                    try { voiceSource.IsMuted = true; Log.Information($"Muted {voiceName} audio source (game unhooked)"); }
-                    catch (Exception ex) { Log.Warning($"Failed to mute {voiceName} source: {ex.Message}"); }
-                }
-            }
         }
 
         private static void OnReplaySaved(object? sender, ReplaySavedEventArgs e)
