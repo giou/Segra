@@ -260,10 +260,32 @@ namespace Segra.Backend.App
                         case "RefreshStorageStats":
                             StorageService.UpdateRecordingDriveSpaceInState();
                             break;
+                        case "RequestState":
+                            // Lightweight re-sync (e.g. the frontend re-asks on window focus)
+                            // without the full NewConnection handshake.
+                            await SendStateToFrontend("State requested");
+                            break;
                         case "NewConnection":
                             Log.Information("NewConnection command received.");
+                            // A bulk update (first-run preset apply, content reload, migration)
+                            // suppresses state/settings pushes; wait for it to finish so this
+                            // sync isn't silently dropped, leaving the UI stale until a refresh.
+                            await WaitForBulkUpdateAsync();
                             await SendSettingsToFrontend("New connection");
                             await SendStateToFrontend("New connection");
+
+                            // If a bulk update is still in progress after the wait, the pushes
+                            // above were dropped again; re-sync once it finishes.
+                            if (Settings.Instance._isBulkUpdating)
+                            {
+                                Log.Warning("NewConnection sync sent while a bulk update is still in progress; scheduling a follow-up sync");
+                                _ = Task.Run(async () =>
+                                {
+                                    await WaitForBulkUpdateAsync(30000);
+                                    await SendSettingsToFrontend("New connection (follow-up)");
+                                    await SendStateToFrontend("New connection (follow-up)");
+                                });
+                            }
 
                             await SendGameList();
 
@@ -680,6 +702,18 @@ namespace Segra.Backend.App
 
             Log.Information("Sending settings to frontend ({Cause})", cause);
             await SendFrontendMessage("Settings", Settings.Instance);
+        }
+
+        // Bulk updates are short (preset applies, settings load); a NewConnection that
+        // lands mid-update must wait for it instead of dropping the sync silently.
+        private static async Task WaitForBulkUpdateAsync(int timeoutMs = 10000)
+        {
+            int waited = 0;
+            while (Settings.Instance._isBulkUpdating && waited < timeoutMs)
+            {
+                await Task.Delay(100);
+                waited += 100;
+            }
         }
 
         // One push in flight at a time; changes made meanwhile are folded into the next push.

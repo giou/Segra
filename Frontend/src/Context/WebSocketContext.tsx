@@ -16,16 +16,94 @@ interface WebSocketMessage {
   content: any;
 }
 
+// The initial sync is a single fire-and-forget NewConnection. If that exchange is lost
+// (native bridge not ready yet on a cold start, backend busy, socket flap while gaming)
+// nothing re-asks and the UI stays stale until a manual refresh. So the connect-time
+// full sync is retried until the authoritative State push actually arrives.
+const SYNC_RETRY_DELAYS_MS = [2000, 5000];
+// Returning to the app re-asks for the (cheap) State push so a recording that started
+// while the window was backgrounded shows up without a manual refresh.
+const FOCUS_RESYNC_DEBOUNCE_MS = 5000;
+
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   // Get the auth session to properly handle authentication
   const { session } = useAuth();
   // Ref to track if this is a reconnection (not initial connection)
   const hasConnectedBefore = useRef(false);
+  // Set when a State push arrives; cleared on every (re)connect until the next push.
+  const stateReceivedRef = useRef(false);
+  const readyStateRef = useRef<ReadyState>(ReadyState.CLOSED);
+  const lastResyncRequestRef = useRef(0);
+  const retryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Log when the WebSocket provider mounts or session changes
   useEffect(() => {
     console.log('WebSocketProvider: Session state changed:', !!session);
   }, [session]);
+
+  const clearSyncRetries = () => {
+    retryTimersRef.current.forEach(clearTimeout);
+    retryTimersRef.current = [];
+  };
+
+  const requestFullSync = useCallback(() => {
+    sendMessageToBackend('NewConnection');
+  }, []);
+
+  // Schedule re-asks of the full sync until the backend's State push arrives.
+  const scheduleSyncRetries = useCallback(() => {
+    clearSyncRetries();
+    for (const delay of SYNC_RETRY_DELAYS_MS) {
+      retryTimersRef.current.push(
+        setTimeout(() => {
+          if (!stateReceivedRef.current && readyStateRef.current === ReadyState.OPEN) {
+            console.log('WebSocket: no State received yet, re-requesting sync');
+            requestFullSync();
+          }
+        }, delay),
+      );
+    }
+  }, [requestFullSync]);
+
+  useEffect(() => clearSyncRetries, []);
+
+  // Track State arrivals so the retry loop above knows when the sync landed.
+  useEffect(() => {
+    const handleStateMessage = (event: CustomEvent<WebSocketMessage>) => {
+      if (event.detail?.method === 'State') {
+        stateReceivedRef.current = true;
+      }
+    };
+
+    window.addEventListener('websocket-message', handleStateMessage as EventListener);
+    return () => {
+      window.removeEventListener('websocket-message', handleStateMessage as EventListener);
+    };
+  }, []);
+
+  // Re-ask for state when returning to the app (cheap RequestState, not a full
+  // NewConnection), debounced so focus flapping doesn't spam the backend.
+  useEffect(() => {
+    const resync = () => {
+      if (readyStateRef.current !== ReadyState.OPEN) return;
+      const now = Date.now();
+      if (now - lastResyncRequestRef.current < FOCUS_RESYNC_DEBOUNCE_MS) return;
+      lastResyncRequestRef.current = now;
+      sendMessageToBackend('RequestState');
+    };
+
+    const handleFocus = () => resync();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') resync();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
 
   // Configure WebSocket with reconnection and heartbeat
   const { readyState } = useWebSocket('ws://localhost:44030/', {
@@ -38,7 +116,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         hasConnectedBefore.current = true;
       }
 
-      sendMessageToBackend('NewConnection');
+      stateReceivedRef.current = false;
+      requestFullSync();
+      scheduleSyncRetries();
 
       // If we already have a session when connecting, ensure we're logged in
       if (session) {
@@ -98,6 +178,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     isConnected: readyState === ReadyState.OPEN,
     connectionState: readyState,
   };
+
+  // Mirror the connection state for the timer/focus handlers above.
+  useEffect(() => {
+    readyStateRef.current = readyState;
+    if (readyState !== ReadyState.OPEN) {
+      clearSyncRetries();
+    }
+  }, [readyState]);
 
   return <WebSocketContext.Provider value={contextValue}>{children}</WebSocketContext.Provider>;
 }
