@@ -101,7 +101,6 @@ export default function VideoSettingsSection({
         ]}
         value={settings.displayCaptureMethod}
         onChange={(val) => updateSettings({ displayCaptureMethod: val as DisplayCaptureMethod })}
-        disabled={isRecording}
       />
     </div>
   );
