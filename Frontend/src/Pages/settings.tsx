@@ -7,7 +7,8 @@ import VideoSettingsSection from '../Components/Settings/VideoSettingsSection';
 import StorageSettingsSection from '../Components/Settings/StorageSettingsSection';
 import ClipSettingsSection from '../Components/Settings/ClipSettingsSection';
 import AudioDevicesSection from '../Components/Settings/AudioDevicesSection';
-import KeybindingsSection from '../Components/Settings/KeybindingsSection';
+import HotkeysSection from '../Components/Settings/HotkeysSection';
+import PendingRecordingSettingsBanner from '../Components/Settings/PendingRecordingSettingsBanner';
 import HotkeyBrokerWarning from '../Components/Settings/HotkeyBrokerWarning';
 import GameDetectionSection from '../Components/Settings/GameDetectionSection';
 import GameIntegrationsSection from '../Components/Settings/GameIntegrationsSection';
@@ -32,7 +33,7 @@ const ALL_NAV_ITEMS: { id: SectionId; label: string }[] = [
 
 function SectionHeader({ id, children }: { id: string; children: React.ReactNode }) {
   return (
-    <div id={id} className="scroll-mt-16 mb-0">
+    <div id={id} className="scroll-mt-24 mb-0">
       <h2 className="text-sm font-semibold text-primary uppercase tracking-wider mb-2 mt-8 first:mt-0">
         {children}
       </h2>
@@ -110,20 +111,20 @@ export default function Settings() {
   }, [navItems]);
 
   return (
-    <div className="min-h-full bg-base-200 dark:bg-base-300">
+    <div className="min-h-full bg-base-200">
       {/* Sticky Jump Nav */}
-      <div className="sticky top-0 z-50 bg-base-200 dark:bg-base-300 border-b border-base-400 px-5 py-3">
+      <div className="sticky top-0 z-50 bg-base-200 px-5 pt-5 pb-3">
         <div className="flex items-center gap-6">
-          <h1 className="text-2xl font-bold">Settings</h1>
+          <h1 className="text-[1.75rem] font-bold">Settings</h1>
           <nav className="flex gap-1">
             {navItems.map((item) => (
               <button
                 key={item.id}
                 onClick={() => scrollToSection(item.id)}
-                className={`px-3 py-1.5 text-sm rounded transition-colors cursor-pointer ${
+                className={`px-3 py-1.5 text-base rounded transition-colors cursor-pointer ${
                   activeSection === item.id
-                    ? 'text-primary bg-base-300'
-                    : 'text-gray-400 hover:text-primary hover:bg-base-300'
+                    ? 'text-primary'
+                    : 'text-base-content/70 hover:text-primary'
                 }`}
               >
                 {item.label}
@@ -134,7 +135,9 @@ export default function Settings() {
       </div>
 
       {/* Content */}
-      <div className="p-5 space-y-6">
+      <div className="settings-content p-5 space-y-6">
+        <PendingRecordingSettingsBanner />
+
         {/* ACCOUNT */}
         {!settings.airplaneMode && (
           <>
@@ -146,10 +149,10 @@ export default function Settings() {
         {/* RECORDING */}
         <SectionHeader id="recording">Recording</SectionHeader>
         <CaptureModeSection settings={settings} updateSettings={updateSettings} />
+        <HotkeysSection settings={settings} updateSettings={updateSettings} />
+        <HotkeyBrokerWarning />
         <VideoSettingsSection settings={settings} updateSettings={updateSettings} />
         <AudioDevicesSection settings={settings} updateSettings={updateSettings} />
-        <KeybindingsSection settings={settings} updateSettings={updateSettings} />
-        <HotkeyBrokerWarning />
 
         {/* CLIPS */}
         <SectionHeader id="clips">Clips</SectionHeader>

@@ -1,8 +1,9 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, KeyboardEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FolderInput } from 'lucide-react';
 import { Settings as SettingsType } from '../../Models/types';
 import { sendMessageToBackend } from '../../Utils/MessageUtils';
+import { clampInt } from '../../Utils/NumberUtils';
 import { useModal } from '../../Context/ModalContext';
 import ConfirmationModal from '../ConfirmationModal';
 import Button from '../Button';
@@ -51,6 +52,21 @@ export default function StorageSettingsSection({
   useEffect(() => {
     setLocalStorageLimit(String(settings.storageLimit));
   }, [settings.storageLimit]);
+
+  const [localContentFolder, setLocalContentFolder] = useState(settings.contentFolder);
+  const [localCacheFolder, setLocalCacheFolder] = useState(settings.cacheFolder);
+
+  useEffect(() => {
+    setLocalContentFolder(settings.contentFolder);
+  }, [settings.contentFolder]);
+
+  useEffect(() => {
+    setLocalCacheFolder(settings.cacheFolder);
+  }, [settings.cacheFolder]);
+
+  const blurOnEnter = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') e.currentTarget.blur();
+  };
 
   useEffect(() => {
     setLocalHighlightLimit(
@@ -144,10 +160,10 @@ export default function StorageSettingsSection({
 
   const handleStorageLimitBlur = () => {
     const currentFolderSizeGb = appState.currentFolderSizeGb;
-    const numericLimit = Number(localStorageLimit) || 1;
-    if (!localStorageLimit || isNaN(Number(localStorageLimit))) {
-      setLocalStorageLimit('1');
-    }
+    const numericLimit = clampInt(localStorageLimit, 1, Number.MAX_SAFE_INTEGER, 1);
+    setLocalStorageLimit(String(numericLimit));
+
+    // Check if the new limit is below the current folder size
     if (numericLimit < currentFolderSizeGb) {
       openModal(
         <ConfirmationModal
@@ -297,9 +313,10 @@ export default function StorageSettingsSection({
 
   return (
     <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+      <h2 className="text-xl font-semibold mb-4">Storage Settings</h2>
       <div className="grid grid-cols-2 gap-4">
         <div className="form-control">
-          <label className="label pb-1">
+          <label className="label">
             <span className="label-text text-base-content">Recording Path</span>
           </label>
           <div className="flex space-x-2">
@@ -307,8 +324,14 @@ export default function StorageSettingsSection({
               <input
                 type="text"
                 name="contentFolder"
-                value={settings.contentFolder}
-                onChange={(e) => updateSettings({ contentFolder: e.target.value })}
+                value={localContentFolder}
+                onChange={(e) => setLocalContentFolder(e.target.value)}
+                onBlur={() => {
+                  if (localContentFolder !== settings.contentFolder) {
+                    updateSettings({ contentFolder: localContentFolder });
+                  }
+                }}
+                onKeyDown={blurOnEnter}
                 placeholder="Enter or select folder path"
                 className="input input-bordered flex-1 bg-base-200 join-item"
               />
@@ -323,7 +346,7 @@ export default function StorageSettingsSection({
         </div>
 
         <div className="form-control">
-          <label className="label pb-1">
+          <label className="label">
             <span className="label-text text-base-content">Cache Path</span>
           </label>
           <div className="flex space-x-2">
@@ -331,8 +354,14 @@ export default function StorageSettingsSection({
               <input
                 type="text"
                 name="cacheFolder"
-                value={settings.cacheFolder}
-                onChange={(e) => updateSettings({ cacheFolder: e.target.value })}
+                value={localCacheFolder}
+                onChange={(e) => setLocalCacheFolder(e.target.value)}
+                onBlur={() => {
+                  if (localCacheFolder !== settings.cacheFolder) {
+                    updateSettings({ cacheFolder: localCacheFolder });
+                  }
+                }}
+                onKeyDown={blurOnEnter}
                 placeholder="Enter or select folder for metadata"
                 className="input input-bordered flex-1 bg-base-200 join-item"
               />
@@ -347,19 +376,24 @@ export default function StorageSettingsSection({
         </div>
 
         <div className="form-control">
-          <label className="label block px-0 pb-1">
-            <span className="label-text text-base-content">Storage Limit (GB)</span>
+          <label className="label block px-0">
+            <span className="label-text text-base-content">Storage Limit</span>
           </label>
-          <input
-            type="number"
-            name="storageLimit"
-            value={localStorageLimit}
-            onChange={(e) => setLocalStorageLimit(e.target.value)}
-            onBlur={handleStorageLimitBlur}
-            placeholder="Set maximum storage in GB"
-            min="1"
-            className="input input-bordered bg-base-200 w-full block outline-none focus:border-base-400"
-          />
+          <div className="relative w-full">
+            <input
+              type="number"
+              name="storageLimit"
+              value={localStorageLimit}
+              onChange={(e) => setLocalStorageLimit(e.target.value)}
+              onBlur={handleStorageLimitBlur}
+              placeholder="Set maximum storage in GB"
+              min="1"
+              className="input input-bordered bg-base-200 w-full block pr-12 outline-none focus:border-base-400"
+            />
+            <span className="absolute inset-y-0 right-3 flex items-center text-sm opacity-60 pointer-events-none">
+              GB
+            </span>
+          </div>
           <span className="text-xs text-base-content/60 mt-1">
             Sessions and Replay Buffers auto-delete when exceeded.
           </span>
@@ -435,6 +469,41 @@ export default function StorageSettingsSection({
         />
       </div>
 
+      <div className="mt-4 flex flex-col gap-3">
+        <label className="flex items-center gap-3 cursor-pointer p-3 bg-base-200 rounded-lg border border-base-400">
+          <input
+            type="checkbox"
+            name="removeOriginalAfterCompression"
+            checked={settings.removeOriginalAfterCompression}
+            onChange={(e) => updateSettings({ removeOriginalAfterCompression: e.target.checked })}
+            className="checkbox checkbox-primary checkbox-sm"
+          />
+          <div>
+            <div className="font-semibold">Delete Original After Compression</div>
+            <div className="text-sm opacity-70 mt-0.5">
+              Removes the full-size video once its compressed copy is saved.
+            </div>
+          </div>
+        </label>
+        <label className="flex items-center gap-3 cursor-pointer p-3 bg-base-200 rounded-lg border border-base-400">
+          <input
+            type="checkbox"
+            name="discardSessionsWithoutBookmarks"
+            checked={settings.discardSessionsWithoutBookmarks}
+            onChange={(e) => updateSettings({ discardSessionsWithoutBookmarks: e.target.checked })}
+            className="checkbox checkbox-primary checkbox-sm"
+          />
+          <div>
+            <div className="font-semibold">Discard Sessions Without Bookmarks</div>
+            <div className="text-sm opacity-70 mt-0.5">
+              Deletes a session recording when it ends unless you added a bookmark with the hotkey.
+              Kills and other automatic bookmarks don&apos;t count.
+            </div>
+          </div>
+        </label>
+      </div>
+
+      {/* Migrate content stored outside the recording path */}
       <AnimatePresence>
         {outsideCount > 0 && (
           <motion.div
@@ -456,13 +525,13 @@ export default function StorageSettingsSection({
             }}
             style={{ overflow: 'hidden' }}
           >
-            <div className="mt-4 flex flex-col gap-3 rounded-lg border border-base-400 bg-base-200 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-4 flex flex-col gap-3 rounded-lg border border-base-400 bg-base-200 p-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="text-base-content font-medium">
                   {outsideCount} video{outsideCount === 1 ? '' : 's'} ({outsideSizeGb.toFixed(2)}{' '}
                   GB) stored outside your recording path
                 </p>
-                <p className="text-sm text-base-content text-opacity-60">
+                <p className="text-sm opacity-70">
                   Move them into your recording path to keep all your content in one place.
                 </p>
               </div>

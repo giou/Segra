@@ -2,6 +2,7 @@ using Serilog;
 using Segra.Backend.App;
 using Segra.Backend.Shared;
 using Segra.Backend.Platform;
+using Segra.Backend.Recorder;
 using System.Text.Json.Serialization;
 using static Segra.Backend.Shared.GeneralUtils;
 
@@ -15,6 +16,7 @@ namespace Segra.Backend.Core.Models
         private GpuVendor _gpuVendor = GpuVendor.Unknown;
         private PreRecording? _preRecording = null;
         private Recording? _recording = null;
+        private bool _alwaysOnBufferActive = false;
         private bool _hasLoadedObs = false;
         private List<Content> _content = [];
 
@@ -87,6 +89,20 @@ namespace Segra.Backend.Core.Models
                 {
                     _recording = value;
                     SendToFrontend("State update: Recording");
+                }
+            }
+        }
+
+        [JsonPropertyName("alwaysOnBufferActive")]
+        public bool AlwaysOnBufferActive
+        {
+            get => _alwaysOnBufferActive;
+            set
+            {
+                if (_alwaysOnBufferActive != value)
+                {
+                    _alwaysOnBufferActive = value;
+                    SendToFrontend("State update: AlwaysOnBufferActive");
                 }
             }
         }
@@ -389,7 +405,11 @@ namespace Segra.Backend.Core.Models
         {
             _audioDeviceDebounceTimer?.Dispose();
             _audioDeviceDebounceTimer = new System.Threading.Timer(
-                _ => UpdateAudioDevices(),
+                _ =>
+                {
+                    try { UpdateAudioDevices(); }
+                    catch (Exception ex) { Log.Error(ex, "Failed to update audio devices"); }
+                },
                 null,
                 DebounceDelayMs,
                 Timeout.Infinite
@@ -400,7 +420,11 @@ namespace Segra.Backend.Core.Models
         {
             _displayDebounceTimer?.Dispose();
             _displayDebounceTimer = new System.Threading.Timer(
-                _ => UpdateDisplays(),
+                _ =>
+                {
+                    try { UpdateDisplays(); }
+                    catch (Exception ex) { Log.Error(ex, "Failed to update displays"); }
+                },
                 null,
                 DebounceDelayMs,
                 Timeout.Infinite
@@ -413,6 +437,7 @@ namespace Segra.Backend.Core.Models
             if (hasChanged)
             {
                 SendToFrontend("Display change detected");
+                OBSService.SyncAlwaysOnBuffer();
             }
         }
     }

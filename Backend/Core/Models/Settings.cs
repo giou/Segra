@@ -1,6 +1,7 @@
 using Serilog;
 using Segra.Backend.App;
 using Segra.Backend.Platform;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Segra.Backend.Core.Models
@@ -45,7 +46,6 @@ namespace Segra.Backend.Core.Models
         private int? _lowlightStorageLimit = null;
         private List<DeviceSetting> _inputDevices = new List<DeviceSetting>();
         private List<DeviceSetting> _outputDevices = new List<DeviceSetting>();
-        private bool _forceMonoInputSources = false;
         private Display? _selectedDisplay = null;
         private DisplayCaptureMethod _displayCaptureMethod = DisplayCaptureMethod.Auto;
         private WindowState? _lastWindowState = null;
@@ -66,7 +66,8 @@ namespace Segra.Backend.Core.Models
         private RecordingMode _recordingMode = RecordingMode.Hybrid;
         private int _replayBufferDuration = 30;
         private int _replayBufferMaxSize = 1000;
-        private List<Keybind> _keybindings;
+        private bool _alwaysOnReplayBuffer = false;
+        private List<Hotkey> _hotkeys;
         private List<GameSetting> _games = new List<GameSetting>();
         private bool _autoRecordGames = true;
         private Auth _auth = new Auth();
@@ -87,7 +88,6 @@ namespace Segra.Backend.Core.Models
         private bool _showAudioWaveformInTimeline = true;
         private bool _enableSeparateAudioTracks = false;
         private AudioOutputMode _audioOutputMode = AudioOutputMode.All;
-        private bool _inputNoiseSuppression = true;
         private string _videoQualityPreset = "high";
         private string _clipQualityPreset = "standard";
         private bool _confirmBeforeDeleting = false;
@@ -100,21 +100,21 @@ namespace Segra.Backend.Core.Models
             .ToList();
         private string _defaultMenuItem = "Full Sessions";
 
-        private static List<Keybind> GetDefaultKeybindings()
+        private static List<Hotkey> GetDefaultHotkeys()
         {
-            return new List<Keybind>
+            return new List<Hotkey>
             {
-                new Keybind(new List<int> { 119 }, KeybindAction.CreateBookmark, true), // 119 is F8
-                new Keybind(new List<int> { 120 }, KeybindAction.ToggleRecording, true), // 120 is F9
-                new Keybind(new List<int> { 121 }, KeybindAction.SaveReplayBuffer, true), // 121 is F10
-                new Keybind(new List<int> { 122 }, KeybindAction.TogglePreview, true) // 122 is F11
+                new Hotkey(new List<int> { 119 }, HotkeyAction.CreateBookmark, true), // 119 is F8
+                new Hotkey(new List<int> { 120 }, HotkeyAction.ToggleRecording, true), // 120 is F9
+                new Hotkey(new List<int> { 121 }, HotkeyAction.SaveReplayBuffer, true), // 121 is F10
+                new Hotkey(new List<int> { 122 }, HotkeyAction.TogglePreview, true) // 122 is F11
             };
         }
 
         public Settings()
         {
             SetDefaultResolution();
-            _keybindings = GetDefaultKeybindings();
+            _hotkeys = GetDefaultHotkeys();
         }
 
         public void BeginBulkUpdate()
@@ -671,31 +671,23 @@ namespace Segra.Backend.Core.Models
             }
         }
 
-        [JsonPropertyName("forceMonoInputSources")]
-        public bool ForceMonoInputSources
+        // Keeps a display replay buffer running whenever no game or manual recording is active.
+        [JsonPropertyName("alwaysOnReplayBuffer")]
+        public bool AlwaysOnReplayBuffer
         {
-            get => _forceMonoInputSources;
-            set
-            {
-                if (_forceMonoInputSources != value)
-                {
-                    _forceMonoInputSources = value;
-                }
-            }
+            get => _alwaysOnReplayBuffer;
+            set => _alwaysOnReplayBuffer = value;
         }
 
+        // Legacy global flags, read only by the "per_device_input_options" migration, which copies them
+        // onto each input device and nulls them out. Do not use these for anything else.
+        [JsonPropertyName("forceMonoInputSources")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? ForceMonoInputSources { get; set; }
+
         [JsonPropertyName("inputNoiseSuppression")]
-        public bool InputNoiseSuppression
-        {
-            get => _inputNoiseSuppression;
-            set
-            {
-                if (_inputNoiseSuppression != value)
-                {
-                    _inputNoiseSuppression = value;
-                }
-            }
-        }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? InputNoiseSuppression { get; set; }
 
         [JsonPropertyName("auth")]
         public Auth Auth
@@ -1088,19 +1080,19 @@ namespace Segra.Backend.Core.Models
         }
 
         [JsonPropertyName("keybindings")]
-        public List<Keybind> Keybindings
+        public List<Hotkey> Hotkeys
         {
-            get => _keybindings;
+            get => _hotkeys;
             set
             {
-                _keybindings = value ?? GetDefaultKeybindings();
+                _hotkeys = value ?? GetDefaultHotkeys();
 
                 // Ensure all default actions exist
-                foreach (var defaultKeybind in GetDefaultKeybindings())
+                foreach (var defaultHotkey in GetDefaultHotkeys())
                 {
-                    if (!_keybindings.Any(k => k.Action == defaultKeybind.Action))
+                    if (!_hotkeys.Any(k => k.Action == defaultHotkey.Action))
                     {
-                        _keybindings.Add(defaultKeybind);
+                        _hotkeys.Add(defaultHotkey);
                     }
                 }
             }
@@ -1124,6 +1116,15 @@ namespace Segra.Backend.Core.Models
         public required string Name { get; set; }
         [JsonPropertyName("volume")]
         public float Volume { get; set; } = 1.0f; // Default volume for all devices initially
+
+        // Input devices only
+        [JsonPropertyName("noiseSuppression")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool NoiseSuppression { get; set; }
+
+        [JsonPropertyName("forceMono")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool ForceMono { get; set; }
     }
 
     // Equality comparer for DeviceSetting based on Id and Name
@@ -1134,7 +1135,8 @@ namespace Segra.Backend.Core.Models
             if (ReferenceEquals(x, y)) return true;
             if (ReferenceEquals(x, null) || ReferenceEquals(y, null))
                 return false;
-            return x.Id == y.Id && x.Name == y.Name && x.Volume == y.Volume;
+            return x.Id == y.Id && x.Name == y.Name && x.Volume == y.Volume
+                && x.NoiseSuppression == y.NoiseSuppression && x.ForceMono == y.ForceMono;
         }
 
         public int GetHashCode(DeviceSetting obj)
@@ -1211,6 +1213,10 @@ namespace Segra.Backend.Core.Models
 
         [JsonPropertyName("audioTrackTypes")]
         public List<string>? AudioTrackTypes { get; set; }
+
+        // Global settings at start, so the frontend can flag changes that only apply to the next recording
+        [JsonPropertyName("startSettings")]
+        public JsonObject? StartSettings { get; set; }
 
         public void AddBookmark(Bookmark bookmark)
         {
@@ -1603,5 +1609,14 @@ namespace Segra.Backend.Core.Models
 
         [JsonPropertyName("rainbowSixSiege")]
         public GameIntegrationSettings RainbowSixSiege { get; set; } = new GameIntegrationSettings(true);
+
+        [JsonPropertyName("wardogs")]
+        public GameIntegrationSettings Wardogs { get; set; } = new GameIntegrationSettings(true);
+
+        [JsonPropertyName("deadlock")]
+        public GameIntegrationSettings Deadlock { get; set; } = new GameIntegrationSettings(true);
+
+        [JsonPropertyName("battlefield6")]
+        public GameIntegrationSettings Battlefield6 { get; set; } = new GameIntegrationSettings(true);
     }
 }

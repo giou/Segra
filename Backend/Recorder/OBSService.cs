@@ -54,6 +54,14 @@ namespace Segra.Backend.Recorder
         private static RecordingOutput? _output;
         private static ReplayBuffer? _bufferOutput;
 
+        // Set while the always-on display buffer owns the outputs; holds what its saves are tagged with.
+        // The key is the configuration it was last started with (see SyncAlwaysOnBuffer).
+        private static volatile Recording? _alwaysOnBuffer;
+        private static volatile string? _alwaysOnBufferKey;
+        private static volatile bool _isExiting;
+
+        public static bool IsAlwaysOnBufferActive => _alwaysOnBuffer != null;
+
         public static GameCapture? GameCaptureSource { get; set; }
         private static Source? _displaySource;
         private static int _displayMonitorIndex = -1;
@@ -76,6 +84,7 @@ namespace Segra.Backend.Recorder
 
         // Mixer mask of the shared "Voice Chat" track, so sources created mid-recording land on the same track
         private static uint _voiceChatMixerMask = 1u << 0;
+        private static AudioOutputMode _recordingAudioOutputMode;
 
         private static readonly (string Name, string Window)[] VoiceChatApps =
         [
@@ -126,7 +135,13 @@ namespace Segra.Backend.Recorder
         // Quality-based rate controls (CRF/CQP) have no bitrate cap, so assume a high worst case when sizing headroom
         private const int QualityModeAssumedMbps = 150;
 
+#if WINDOWS
+        private static int _obsCheckPending;
+        private const int ObsCheckDelayMs = 2000;
+#endif
+
         private static bool _isStoppingOrStopped = false;
+        private static ObsBoundsType _captureBoundsType = ObsBoundsType.ScaleInner;
         private static uint _currentBaseWidth;
         private static uint _currentBaseHeight;
         private static uint _currentOutputWidth;
@@ -207,14 +222,15 @@ namespace Segra.Backend.Recorder
                     return false;
                 }
 
-                string? exePath = AppState.Instance.Recording?.ExePath;
+                var recording = AppState.Instance.Recording ?? _alwaysOnBuffer;
+                string? exePath = recording?.ExePath;
                 var request = new ReplaySaveRequest
                 {
-                    Game = AppState.Instance.Recording?.Game ?? "Unknown",
+                    Game = recording?.Game ?? "Unknown",
                     IgdbId = !string.IsNullOrEmpty(exePath) ? GameUtils.GetIgdbIdFromExePath(exePath) : null,
                     ExePath = exePath,
-                    AudioTrackNames = AppState.Instance.Recording?.AudioTrackNames,
-                    AudioTrackTypes = AppState.Instance.Recording?.AudioTrackTypes
+                    AudioTrackNames = recording?.AudioTrackNames,
+                    AudioTrackTypes = recording?.AudioTrackTypes
                 };
 
                 lock (_replaySaveLock)
@@ -445,6 +461,8 @@ namespace Segra.Backend.Recorder
                 {
                     string error = buffer.LastError ?? "Unknown error";
                     Log.Error($"Failed to restart replay buffer after reset: {error}");
+                    if (_alwaysOnBuffer != null)
+                        StopAlwaysOnBufferCore(failed: true);
                 }
                 else
                 {
@@ -691,15 +709,16 @@ namespace Segra.Backend.Recorder
                 // initialization failure - OBS itself is already up at this point.
                 try
                 {
-                    KeybindCaptureService.Start();
+                    HotkeyCaptureService.Start();
                 }
                 catch (Exception ex)
                 {
-                    Log.Error(ex, "Failed to register keybind hotkeys");
+                    Log.Error(ex, "Failed to register hotkeys");
                 }
 
                 _ = Task.Run(RecoveryService.CheckForOrphanedFilesAsync);
                 RecorderHealthService.StartWatchdog();
+                SyncAlwaysOnBuffer();
 #if WINDOWS
                 _ = CreateDeviceLossProbeAsync();
 #endif
@@ -732,17 +751,21 @@ namespace Segra.Backend.Recorder
 
         public static void Shutdown()
         {
+            _isExiting = true;
+
             if (!IsInitialized)
             {
                 Log.Information("OBS is not initialized, skipping shutdown");
                 return;
             }
 
+            // Let an in-flight start or stop finish before OBS is torn down
+            bool locked = _stopRecordingSemaphore.Wait(TimeSpan.FromSeconds(5));
             try
             {
                 Log.Information("Shutting down OBS...");
 
-                KeybindCaptureService.Stop();
+                HotkeyCaptureService.Stop();
 
                 // Manually clean up all resources since AutoDispose is false
                 DisposeOutput();
@@ -764,6 +787,11 @@ namespace Segra.Backend.Recorder
             catch (Exception ex)
             {
                 Log.Error(ex, "Error during OBS shutdown");
+            }
+            finally
+            {
+                if (locked)
+                    _stopRecordingSemaphore.Release();
             }
         }
 
@@ -790,6 +818,7 @@ namespace Segra.Backend.Recorder
         // Bounded variants for exit paths: a wedged libobs must never keep Segra from exiting.
         public static bool TryStopRecording(TimeSpan timeout)
         {
+            _isExiting = true;
             try
             {
                 if (Task.Run(() => StopRecording()).Wait(timeout))
@@ -886,18 +915,21 @@ namespace Segra.Backend.Recorder
         }
 
         // Effective recording settings (global overlaid with per-game overrides) resolved at the start of
-        // the active recording. Consumed by StartRecording, OnRecordingStopped and the keybind handler so
+        // the active recording. Consumed by StartRecording, OnRecordingStopped and the hotkey handler so
         // they all agree on the same values for the duration of the recording.
         private static EffectiveRecordingSettings? _activeEffectiveSettings;
         public static EffectiveRecordingSettings? ActiveEffectiveSettings => _activeEffectiveSettings;
 
         public static bool StartRecording(string name = "Manual Recording", string exePath = "Unknown", bool startManually = false, int? pid = null)
         {
+            bool started = false;
             // Held for the whole call (not just a wait-then-release at entry) so Start and Stop can never interleave.
             _stopRecordingSemaphore.Wait();
             try
             {
-                return StartRecordingCore(name, exePath, startManually, pid);
+                StopAlwaysOnBufferCore();
+                started = StartRecordingCore(name, exePath, startManually, pid);
+                return started;
             }
             catch (Exception ex)
             {
@@ -932,10 +964,13 @@ namespace Segra.Backend.Recorder
             finally
             {
                 _stopRecordingSemaphore.Release();
+
+                if (!started)
+                    SyncAlwaysOnBuffer();
             }
         }
 
-        private static bool StartRecordingCore(string name, string exePath, bool startManually, int? pid)
+        private static bool StartRecordingCore(string name, string exePath, bool startManually, int? pid, bool alwaysOn = false)
         {
             if (!IsOBSInstalled())
             {
@@ -955,6 +990,9 @@ namespace Segra.Backend.Recorder
             // Note: the static _activeEffectiveSettings is only published once the early-return guards
             // below have passed, so a blocked start attempt can never clobber an active recording's settings.
             EffectiveRecordingSettings eff = GameSettingsService.Resolve(exePath);
+            var startSettings = alwaysOn ? null : MessageService.GetRecordingStartSettings();
+            if (alwaysOn)
+                eff.RecordingMode = RecordingMode.Buffer;
 
             bool isReplayBufferMode = eff.RecordingMode == RecordingMode.Buffer;
             bool isSessionMode = eff.RecordingMode == RecordingMode.Session;
@@ -975,9 +1013,10 @@ namespace Segra.Backend.Recorder
             // checks below intentionally run after this so they estimate using the per-game bitrate.
             _activeEffectiveSettings = eff;
 
-            // Prevent starting if any of the system, recording or temp drives are almost full
+            // Prevent starting if any of the system, recording or temp drives are almost full.
+            // The always-on buffer lives in memory until a save, so it skips these checks.
             List<StorageService.FullDrive> fullDrives = StorageService.GetFullDrives();
-            if (fullDrives.Count > 0)
+            if (!alwaysOn && fullDrives.Count > 0)
             {
                 string drivesText = string.Join(", ", fullDrives.Select(d => $"{d.Label} ({d.Root.TrimEnd('\\')}) is {d.UsedPercent:F1}% full"));
                 Log.Error($"Cannot start recording, drive(s) over {StorageService.DriveFullThresholdPercent:F0}% full: {drivesText}");
@@ -993,7 +1032,7 @@ namespace Segra.Backend.Recorder
             // configured bitrate (same threshold the in-recording monitor would immediately stop at).
             long? freeBytes = StorageService.GetContentDriveFreeBytes();
             long freeSpaceThreshold = GetRecordingFreeSpaceThresholdBytes();
-            if (freeBytes != null && freeBytes.Value < freeSpaceThreshold)
+            if (!alwaysOn && freeBytes != null && freeBytes.Value < freeSpaceThreshold)
             {
                 double freeMb = freeBytes.Value / (1024.0 * 1024.0);
                 long thresholdMb = freeSpaceThreshold / (1024 * 1024);
@@ -1073,7 +1112,8 @@ namespace Segra.Backend.Recorder
             if (startManually)
             {
                 Log.Information("Manual recording started - using display capture");
-                AddMonitorCapture();
+                // The always-on buffer restarts often; a missing display shouldn't raise a modal each time
+                AddMonitorCapture(warnIfNotFound: !alwaysOn);
                 // Use base dimensions for bounds - scene canvas is at base resolution
                 _displayItem?.SetBounds(ObsBoundsType.ScaleInner, _currentBaseWidth, _currentBaseHeight).SetPosition(0, 0);
             }
@@ -1090,38 +1130,13 @@ namespace Segra.Backend.Recorder
                     AddWindowCapture(_captureWindowSpec);
                 }
 
-                // Create game capture source for automatic game detection
-                try
-                {
-                    GameCaptureSource = new GameCapture("gameplay", GameCapture.CaptureMode.SpecificWindow);
-                    GameCaptureSource.SetWindow(_captureWindowSpec);
-
-                    // OBS can't auto-detect HDR game capture and defaults a 10-bit (R10G10B10A2)
-                    // swapchain to sRGB, so an HDR game would be captured as SDR. Force Rec.2100 PQ.
-                    if (_isHdrRecording)
-                    {
-                        GameCaptureSource.SetRgb10A2ColorSpace(GameCapture.Rgb10A2ColorSpace.Pq2100);
-                        Log.Information("Game capture color space set to Rec.2100 PQ (HDR)");
-                    }
-
-
-                    Log.Information($"Game capture configured for: {fileName}");
-
-                    // Add game capture to scene (top layer - visible when hooked)
-                    _gameCaptureItem = _mainScene.AddSource(GameCaptureSource);
-
-                    // Start a timer to check if game capture hooks within 90 seconds
-                    StartGameCaptureHookTimeoutTimer();
-
-                    // Subscribe to GameCapture's hooked/unhooked events (IsHooked is tracked automatically)
-                    GameCaptureSource!.Hooked += OnGameCaptureHookedEvent;
-                    GameCaptureSource.Unhooked += OnGameCaptureUnhookedEvent;
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning($"Game Capture source not available: {ex.Message}. Using Display Capture only.");
-                    GameCaptureSource = null;
-                }
+                // The game hook serves one app per game, so leave it to OBS Studio while it streams or records
+                if (ObsStudioOutput.IsStreamingOrRecording())
+                    Log.Information("OBS Studio is streaming or recording, skipping game capture");
+                else if (IsGameHookTaken(fileName))
+                    Log.Information("Another app has the game hook, skipping game capture");
+                else
+                    AddGameCapture(_captureWindowSpec, withHookTimeout: true);
 
                 // Try to get the window dimensions for the game
                 if (WindowUtils.GetWindowDimensionsByPreRecordingExeOrPid(out uint windowWidth, out uint windowHeight))
@@ -1137,12 +1152,12 @@ namespace Segra.Backend.Recorder
                     // Scene item bounds must use BASE dimensions (not output) because the scene canvas is at base resolution.
                     // For 4:3 content: base is 4:3, output is 16:9 - OBS handles the stretch at the output level.
                     // For non-4:3: base == output, ScaleInner ensures content scales with black bars if window shrinks.
-                    var boundsType = is4by3 ? ObsBoundsType.Stretch : ObsBoundsType.ScaleInner;
-                    _gameCaptureItem?.SetBounds(boundsType, _currentBaseWidth, _currentBaseHeight).SetPosition(0, 0);
-                    _windowCaptureItem?.SetBounds(boundsType, _currentBaseWidth, _currentBaseHeight).SetPosition(0, 0);
-                    _displayItem?.SetBounds(boundsType, _currentBaseWidth, _currentBaseHeight).SetPosition(0, 0);
+                    _captureBoundsType = is4by3 ? ObsBoundsType.Stretch : ObsBoundsType.ScaleInner;
+                    ApplyCaptureBounds(_gameCaptureItem);
+                    ApplyCaptureBounds(_windowCaptureItem);
+                    ApplyCaptureBounds(_displayItem);
 
-                    FollowGameMonitor();
+                    FollowGameMonitor(WindowUtils.TryGetPreRecordingWindowHandle());
                 }
                 else
                 {
@@ -1162,11 +1177,13 @@ namespace Segra.Backend.Recorder
 
             // Fastest retries the hook every 0.2s instead of 2s. If it hasn't hooked by then it
             // isn't going to, so back off instead of retrying that fast for the whole session.
-            GameCaptureSource?.SetHookRate(GameCapture.HookRate.Fastest);
+            // Bound to this start's source so a quick handoff can't cut the next recording's window short.
+            var gameCapture = GameCaptureSource;
+            gameCapture?.SetHookRate(GameCapture.HookRate.Fastest);
             _ = Task.Run(async () =>
             {
                 await Task.Delay(FastHookWindowMs);
-                try { GameCaptureSource?.SetHookRate(GameCapture.HookRate.Normal); }
+                try { if (gameCapture != null && gameCapture == GameCaptureSource) gameCapture.SetHookRate(GameCapture.HookRate.Normal); }
                 catch (Exception ex) { Log.Warning($"Failed to reset game capture hook rate: {ex.Message}"); }
             });
 
@@ -1272,15 +1289,14 @@ namespace Segra.Backend.Recorder
                             ? AudioInputCapture.FromDefault(sourceName)
                             : AudioInputCapture.FromDevice(deviceSetting.Id, sourceName);
 
-                        // Apply Force Mono if enabled
-                        SetForceMono(micSource, Settings.Instance.ForceMonoInputSources);
+                        SetForceMono(micSource, deviceSetting.ForceMono);
 
                         micSource.Volume = deviceSetting.Volume;
 
                         _mainScene!.AddSource(micSource);
                         _micSources.Add(micSource);
 
-                        if (Settings.Instance.InputNoiseSuppression)
+                        if (deviceSetting.NoiseSuppression)
                         {
                             try
                             {
@@ -1305,6 +1321,7 @@ namespace Segra.Backend.Recorder
             }
 
             var audioOutputMode = Settings.Instance.AudioOutputMode;
+            _recordingAudioOutputMode = audioOutputMode;
 
             // Game audio is captured from the game process; output devices are only used in Everything
             // mode, for manual recordings, or when process capture is unavailable
@@ -1592,6 +1609,9 @@ namespace Segra.Backend.Recorder
                 {
                     string error = _bufferOutput.LastError ?? "Unknown error";
                     Log.Error($"Failed to start replay buffer: {error}");
+                    if (alwaysOn)
+                        return false;
+
                     Task.Run(() => ShowModal("Replay buffer failed", "Failed to start replay buffer. Check the log for more details.", "error"));
                     Task.Run(() => PlaySound("error"));
                     AppState.Instance.PreRecording = null;
@@ -1599,13 +1619,29 @@ namespace Segra.Backend.Recorder
                     return false;
                 }
 
-                if (!hasPlayedStartSound)
+                if (!hasPlayedStartSound && !alwaysOn)
                 {
                     _ = Task.Run(() => PlaySound("start"));
                     hasPlayedStartSound = true;
                 }
 
                 Log.Information("Replay buffer started successfully");
+            }
+
+            // The always-on buffer is not a recording: no card, tray state, priority boost or integrations
+            if (alwaysOn)
+            {
+                _alwaysOnBuffer = new Recording()
+                {
+                    StartTime = DateTime.Now,
+                    Game = name,
+                    FileName = fileName,
+                    ExePath = exePath,
+                    AudioTrackNames = actualAudioTrackNames,
+                    AudioTrackTypes = actualAudioTrackTypes
+                };
+                AppState.Instance.AlwaysOnBufferActive = true;
+                return true;
             }
 
             AppState.Instance.Recording = new Recording()
@@ -1620,7 +1656,8 @@ namespace Segra.Backend.Recorder
                 ExePath = exePath,
                 CoverImageId = GameUtils.GetCoverImageIdFromExePath(exePath),
                 AudioTrackNames = actualAudioTrackNames,
-                AudioTrackTypes = actualAudioTrackTypes
+                AudioTrackTypes = actualAudioTrackTypes,
+                StartSettings = startSettings
             };
             AppState.Instance.PreRecording = null;
             _ = MessageService.SendStateToFrontend("OBS Start recording");
@@ -1640,7 +1677,7 @@ namespace Segra.Backend.Recorder
             return true;
         }
 
-        public static void AddMonitorCapture()
+        public static void AddMonitorCapture(bool warnIfNotFound = true)
         {
             if (_mainScene == null)
             {
@@ -1648,7 +1685,7 @@ namespace Segra.Backend.Recorder
                 return;
             }
 
-            int monitorIndex = ResolveSelectedMonitorIndex(warnIfNotFound: true);
+            int monitorIndex = ResolveSelectedMonitorIndex(warnIfNotFound);
             _displayMonitorIndex = monitorIndex;
 
 #if WINDOWS
@@ -1719,14 +1756,14 @@ namespace Segra.Backend.Recorder
         /// <summary>
         /// Points the display fallback at the game window's monitor; keeps the selected display if it can't be resolved.
         /// </summary>
-        private static void FollowGameMonitor()
+        private static void FollowGameMonitor(IntPtr gameWindow)
         {
 #if WINDOWS
             if (_displaySource is not MonitorCapture monitorCapture) return;
 
             try
             {
-                string? deviceId = DisplayService.GetDeviceIdForWindow(WindowUtils.TryGetPreRecordingWindowHandle());
+                string? deviceId = DisplayService.GetDeviceIdForWindow(gameWindow);
                 if (deviceId == null) return;
 
                 int index = AppState.Instance.Displays.FindIndex(d => d.DeviceId == deviceId);
@@ -1911,8 +1948,8 @@ namespace Segra.Backend.Recorder
             await _stopRecordingSemaphore.WaitAsync();
             try
             {
-                // Check if already stopping or stopped
-                if (_isStoppingOrStopped)
+                // Check if already stopping or stopped (the always-on buffer is not a recording to stop)
+                if (_isStoppingOrStopped || _alwaysOnBuffer != null)
                 {
                     Log.Information("StopRecording called but already stopping or stopped.");
                     return;
@@ -2209,7 +2246,154 @@ namespace Segra.Backend.Recorder
             finally
             {
                 _stopRecordingSemaphore.Release();
+                SyncAlwaysOnBuffer();
             }
+        }
+
+        /// <summary>
+        /// Brings the always-on buffer in line with its setting: running while nothing records, restarted
+        /// when its configuration changes. A failed buffer is only retried after the configuration
+        /// changes, a recording has run or the setting is toggled. Safe to call from anywhere.
+        /// </summary>
+        public static void SyncAlwaysOnBuffer()
+        {
+            // Nothing to do while it's off or a recording runs, unless it is running or has a failed start to forget
+            bool idle = AppState.Instance.Recording == null && AppState.Instance.PreRecording == null;
+            if (_alwaysOnBuffer == null && _alwaysOnBufferKey == null && !(Settings.Instance.AlwaysOnReplayBuffer && idle))
+                return;
+
+            _ = Task.Run(async () =>
+            {
+                await _stopRecordingSemaphore.WaitAsync();
+                try
+                {
+                    bool wanted = Settings.Instance.AlwaysOnReplayBuffer && IsInitialized && !_isExiting
+                        && !RecorderHealthService.IsRecorderLost
+                        && AppState.Instance.Recording == null && AppState.Instance.PreRecording == null;
+
+                    if (_alwaysOnBuffer != null)
+                    {
+                        if (wanted && GetAlwaysOnBufferKey() == _alwaysOnBufferKey)
+                            return;
+
+                        StopAlwaysOnBufferCore();
+                    }
+
+                    if (!wanted)
+                    {
+                        _alwaysOnBufferKey = null;
+                        return;
+                    }
+
+                    string key = GetAlwaysOnBufferKey();
+                    if (key == _alwaysOnBufferKey || _output != null || _bufferOutput != null)
+                        return;
+
+                    Log.Information("Starting always-on replay buffer");
+                    _alwaysOnBufferKey = key;
+                    try
+                    {
+                        if (StartRecordingCore("Manual Recording", "Unknown", startManually: true, pid: null, alwaysOn: true))
+                            return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Failed to start the always-on replay buffer");
+                        if (ex is ObsKit.NET.Exceptions.ObsVideoResetException)
+                            RecorderHealthService.MarkRecorderLost(ex.Message);
+                    }
+
+                    DisposeAlwaysOnBuffer();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Failed to update the always-on replay buffer");
+                }
+                finally
+                {
+                    _stopRecordingSemaphore.Release();
+                }
+            });
+        }
+
+        // Caller holds _stopRecordingSemaphore. A failed buffer keeps its key so it isn't restarted as is.
+        private static void StopAlwaysOnBufferCore(bool failed = false)
+        {
+            if (!failed)
+                _alwaysOnBufferKey = null;
+
+            if (_alwaysOnBuffer == null)
+                return;
+
+            Log.Information("Stopping always-on replay buffer");
+            _alwaysOnBuffer = null;
+            _isStoppingOrStopped = true;
+            try
+            {
+                WaitForInFlightReplaySaveAsync().GetAwaiter().GetResult();
+                if (_bufferOutput?.Stop(waitForCompletion: true, timeoutMs: 30000) == false)
+                    _bufferOutput.ForceStop();
+            }
+            finally
+            {
+                DisposeAlwaysOnBuffer();
+            }
+        }
+
+        private static void DisposeAlwaysOnBuffer()
+        {
+            DisposeOutput();
+            DisposeSources();
+            DisposeEncoders();
+            _alwaysOnBuffer = null;
+            _isStoppingOrStopped = true;
+            _activeEffectiveSettings = null;
+            _isHdrRecording = false;
+            _hdrEncoderId = null;
+            AppState.Instance.AlwaysOnBufferActive = false;
+        }
+
+        private static async Task StopFailedAlwaysOnBuffer(Recording failed)
+        {
+            // A buffer that ran for a while likely hit something transient (e.g. a GPU reset), so it gets
+            // one retry; one that fails soon after starting stays off until something changes.
+            bool retry = DateTime.Now - failed.StartTime > TimeSpan.FromMinutes(5);
+
+            await _stopRecordingSemaphore.WaitAsync();
+            try
+            {
+                if (_alwaysOnBuffer != failed)
+                    return;
+
+                StopAlwaysOnBufferCore(failed: !retry);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to stop the always-on replay buffer");
+            }
+            finally
+            {
+                _stopRecordingSemaphore.Release();
+            }
+
+            if (retry)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30));
+                SyncAlwaysOnBuffer();
+            }
+        }
+
+        // Everything the always-on buffer is built from; any change restarts it
+        private static string GetAlwaysOnBufferKey()
+        {
+            var s = Settings.Instance;
+            return System.Text.Json.JsonSerializer.Serialize(new object?[]
+            {
+                s.Resolution, s.FrameRate, s.RateControl, s.Bitrate, s.MinBitrate, s.MaxBitrate, s.CrfValue, s.CqLevel,
+                s.Codec?.InternalEncoderId, s.EnableHdr, s.Stretch4By3, s.ReplayBufferDuration, s.ReplayBufferMaxSize,
+                s.InputDevices, s.OutputDevices, s.EnableSeparateAudioTracks,
+                s.SelectedDisplay?.DeviceId, s.ContentFolder, AppState.Instance.Displays
+            });
         }
 
         /// <summary>
@@ -2438,6 +2622,14 @@ namespace Segra.Backend.Recorder
             // fired this signal, straight from obs_output_get_last_error at the moment it stopped.
             string? lastError = e.LastError;
 
+            // The always-on buffer is a background convenience: no modal, it just stays off until something changes
+            if (_alwaysOnBuffer is { } alwaysOn)
+            {
+                Log.Error($"OBS stopped the always-on replay buffer unexpectedly (code {code}); last error: {lastError ?? "(none)"}");
+                _ = Task.Run(() => StopFailedAlwaysOnBuffer(alwaysOn));
+                return;
+            }
+
             Log.Error($"OBS stopped the recording output unexpectedly (code {code}); last error: {lastError ?? "(none)"}");
             _ = Task.Run(() => HandleUnexpectedOutputStop(code, lastError));
         }
@@ -2591,7 +2783,7 @@ namespace Segra.Backend.Recorder
         {
             try
             {
-                if (Settings.Instance.AudioOutputMode != AudioOutputMode.GameAndDiscord) return;
+                if (_recordingAudioOutputMode != AudioOutputMode.GameAndDiscord) return;
                 if (_mainScene == null || _gameAudioSource == null || _isStoppingOrStopped) return;
 
                 string fileName = Path.GetFileName(exePath);
@@ -2778,6 +2970,145 @@ namespace Segra.Backend.Recorder
             StopGameCaptureHookTimeoutTimer();
         }
 
+        private static void ApplyCaptureBounds(SceneItem? item) =>
+            item?.SetBounds(_captureBoundsType, _currentBaseWidth, _currentBaseHeight).SetPosition(0, 0);
+
+#if WINDOWS
+        private static void AddGameCapture(string windowSpec, bool withHookTimeout)
+        {
+            try
+            {
+                GameCaptureSource = new GameCapture("gameplay", GameCapture.CaptureMode.SpecificWindow);
+                GameCaptureSource.SetWindow(windowSpec);
+
+                // OBS can't auto-detect HDR game capture and defaults a 10-bit (R10G10B10A2)
+                // swapchain to sRGB, so an HDR game would be captured as SDR. Force Rec.2100 PQ.
+                if (_isHdrRecording)
+                {
+                    GameCaptureSource.SetRgb10A2ColorSpace(GameCapture.Rgb10A2ColorSpace.Pq2100);
+                    Log.Information("Game capture color space set to Rec.2100 PQ (HDR)");
+                }
+
+                Log.Information($"Game capture configured for: {windowSpec.Split(':')[^1]}");
+
+                // Add game capture to scene (top layer - visible when hooked)
+                _gameCaptureItem = _mainScene!.AddSource(GameCaptureSource);
+
+                // Start a timer to check if game capture hooks within 90 seconds
+                if (withHookTimeout)
+                    StartGameCaptureHookTimeoutTimer();
+
+                // Subscribe to GameCapture's hooked/unhooked events (IsHooked is tracked automatically)
+                GameCaptureSource.Hooked += OnGameCaptureHookedEvent;
+                GameCaptureSource.Unhooked += OnGameCaptureUnhookedEvent;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Game Capture source not available: {ex.Message}. Using Display Capture only.");
+                GameCaptureSource = null;
+            }
+        }
+
+        // Whoever holds a game's hook (OBS Studio's preview, Streamlabs, ...) owns its log pipe
+        private static bool IsGameHookTaken(string exeFileName)
+        {
+            var processes = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(exeFileName));
+            try
+            {
+                return processes.Any(p => Directory.GetFiles(@"\\.\pipe\", $"CaptureHook_Pipe{p.Id}").Length > 0);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Failed to check the game hook pipe: {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                foreach (var process in processes) process.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Called when the recorded game regains focus: hands the game hook to OBS Studio while it streams or
+        /// records, and retries game capture once the hook is free.
+        /// </summary>
+        public static void OnGameFocused(IntPtr gameWindow)
+        {
+            if (Interlocked.Exchange(ref _obsCheckPending, 1) == 1) return;
+
+            _ = Task.Run(async () =>
+            {
+                // OBS only logs a stream start once connected, which can land after a quick tab back
+                await Task.Delay(ObsCheckDelayMs);
+                Interlocked.Exchange(ref _obsCheckPending, 0);
+                SyncGameCaptureWithObs(gameWindow);
+            });
+        }
+
+        private static void SyncGameCaptureWithObs(IntPtr gameWindow)
+        {
+            // Start and stop hold this for their whole run; skip rather than race them
+            if (!_stopRecordingSemaphore.Wait(0)) return;
+            try
+            {
+                if (_isStoppingOrStopped || _mainScene == null || _captureWindowSpec == null || AppState.Instance.Recording == null) return;
+
+                bool obsActive = ObsStudioOutput.IsStreamingOrRecording();
+                if (obsActive && GameCaptureSource != null)
+                    ReleaseGameCaptureToObs(gameWindow);
+                else if (!obsActive && GameCaptureSource == null && !IsGameHookTaken(_captureWindowSpec.Split(':')[^1]))
+                    RetryGameCapture();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Failed to update game capture on focus: {ex.Message}");
+            }
+            finally
+            {
+                _stopRecordingSemaphore.Release();
+            }
+        }
+
+        private static void ReleaseGameCaptureToObs(IntPtr gameWindow)
+        {
+            Log.Information("OBS Studio is streaming or recording, releasing game capture");
+
+            // A late hook would remove the fallbacks added below
+            GameCaptureSource!.Hooked -= OnGameCaptureHookedEvent;
+
+            // The hooked handler removed the fallbacks; bring them back before the game capture goes
+            if (_displayItem == null)
+            {
+                AddMonitorCapture(warnIfNotFound: false);
+                ApplyCaptureBounds(_displayItem);
+                FollowGameMonitor(gameWindow);
+            }
+            if (_windowCaptureItem == null)
+            {
+                AddWindowCapture(_captureWindowSpec!);
+                ApplyCaptureBounds(_windowCaptureItem);
+                for (int i = 0; i < HookWaitMs / 50 && !_isWindowCaptureHooked && !_isWindowCaptureBlocked; i++)
+                    Thread.Sleep(50);
+            }
+
+            DisposeGameCaptureSource();
+
+            if (AppState.Instance.Recording is { } recording)
+                recording.IsUsingGameHook = false;
+            UpdateFallbackCapture();
+            _ = MessageService.SendStateToFrontend("Released game capture");
+        }
+
+        private static void RetryGameCapture()
+        {
+            Log.Information("Game hook is free, retrying game capture");
+
+            // If the hook times out again, the next tab-in tries again
+            AddGameCapture(_captureWindowSpec!, withHookTimeout: true);
+            ApplyCaptureBounds(_gameCaptureItem);
+        }
+#endif
+
         /// <summary>
         /// WGC window capture of the game window, between display and game capture, for games the hook can't attach to.
         /// </summary>
@@ -2797,6 +3128,9 @@ namespace Segra.Backend.Recorder
                 _windowCaptureClearChecks = 0;
                 StartCaptureFallbackMonitor();
                 Log.Information($"Window capture (WGC) added for: {windowSpec}");
+
+                // Check now so the recording doesn't start out reporting window capture for a blocked window
+                OnCaptureFallbackCheck(null);
             }
             catch (Exception ex)
             {
@@ -3836,9 +4170,20 @@ namespace Segra.Backend.Recorder
 
             Log.Information($"Total encoders found: {idx}");
 
-            if (Settings.Instance.Codec == null)
+            var codec = Settings.Instance.Codec;
+            if (codec == null || !AppState.Instance.Codecs.Any(c => c.InternalEncoderId.Equals(codec.InternalEncoderId, StringComparison.OrdinalIgnoreCase)))
             {
                 Settings.Instance.Codec = SelectDefaultCodec(Settings.Instance.Encoder, AppState.Instance.Codecs);
+                if (codec != null)
+                {
+                    Log.Information($"Codec '{codec.FriendlyName}' is no longer available, switched to '{Settings.Instance.Codec?.FriendlyName}'");
+                    _ = Task.Run(() => MessageService.ShowModal(
+                        "Codec changed",
+                        $"The codec {codec.FriendlyName} is no longer available on this system, likely because the GPU was changed. Segra will use {Settings.Instance.Codec?.FriendlyName} instead. You can change it in Settings.",
+                        "warning"));
+                    SettingsService.SaveSettings();
+                    _ = MessageService.SendSettingsToFrontend("Codec fallback");
+                }
             }
         }
 

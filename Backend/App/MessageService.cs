@@ -3,6 +3,7 @@ using System.Net;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Segra.Backend.Auth;
 using Segra.Backend.Core;
 using Segra.Backend.Games;
@@ -481,7 +482,13 @@ namespace Segra.Backend.App
                 {
                     HttpListenerContext context = await listener.GetContextAsync();
 
-                    if (context.Request.IsWebSocketRequest)
+                    string? origin = context.Request.Headers["Origin"];
+                    if (context.Request.IsWebSocketRequest && origin != null && !Api.ContentServer.IsLocalOrigin(origin))
+                    {
+                        context.Response.StatusCode = 403;
+                        context.Response.Close();
+                    }
+                    else if (context.Request.IsWebSocketRequest)
                     {
                         Log.Information("Received WebSocket connection request");
 
@@ -693,6 +700,28 @@ namespace Segra.Backend.App
                     type = modal.Type
                 });
             }
+        }
+
+        // Settings a recording reads when it starts; the frontend compares these to show pending changes
+        private static readonly string[] RecordingStartSettingKeys =
+        [
+            "recordingMode", "resolution", "frameRate", "rateControl", "bitrate", "minBitrate", "maxBitrate",
+            "crfValue", "cqLevel", "encoder", "codec", "stretch4By3", "enableHdr", "replayBufferDuration",
+            "replayBufferMaxSize", "inputDevices", "outputDevices", "forceMonoInputSources", "inputNoiseSuppression",
+            "enableSeparateAudioTracks", "audioOutputMode", "gameIntegrations"
+        ];
+
+        // Serialized exactly like the Settings message so the frontend can compare values directly
+        public static JsonObject GetRecordingStartSettings()
+        {
+            var settings = JsonSerializer.SerializeToNode(Settings.Instance, jsonOptions)!.AsObject();
+            var snapshot = new JsonObject();
+            foreach (var key in RecordingStartSettingKeys)
+            {
+                if (settings[key] is { } value)
+                    snapshot[key] = value.DeepClone();
+            }
+            return snapshot;
         }
 
         public static async Task SendSettingsToFrontend(string cause)
@@ -1006,10 +1035,15 @@ namespace Segra.Backend.App
                     await SendFrontendMessage("SelectedGameExecutable", gameObject);
                     Log.Information($"Selected game executable: {filePath}{(catalogName != null ? $" (matched catalog game '{catalogName}')" : "")}");
                 }
+                else
+                {
+                    await SendFrontendMessage("SelectedGameExecutable", new { paths = Array.Empty<string>() });
+                }
             }
             catch (Exception ex)
             {
                 Log.Error($"Error selecting game executable: {ex.Message}");
+                await SendFrontendMessage("SelectedGameExecutable", new { paths = Array.Empty<string>() });
                 await ShowModal("Error", $"Failed to select game executable: {ex.Message}", "error");
             }
         }

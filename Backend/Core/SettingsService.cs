@@ -9,12 +9,14 @@ using Segra.Backend.Platform;
 using Segra.Backend.Windows.Input;
 using Segra.Backend.Windows.Storage;
 using System.Text.Json.Serialization;
+using System.Reflection;
 
 namespace Segra.Backend.Core
 {
     internal static class SettingsService
     {
         public static readonly string SettingsFilePath = PathUtils.Normalize(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Segra", "settings.json"));
+        private static readonly object _saveLock = new();
 
         public static void SaveSettings(bool force = false, bool suppressLog = false)
         {
@@ -37,7 +39,12 @@ namespace Segra.Backend.Core
                     WriteIndented = true
                 });
 
-                File.WriteAllText(SettingsFilePath, json);
+                lock (_saveLock)
+                {
+                    string tempPath = SettingsFilePath + ".tmp";
+                    File.WriteAllText(tempPath, json);
+                    File.Move(tempPath, SettingsFilePath, true);
+                }
 
                 if (!suppressLog)
                 {
@@ -48,6 +55,17 @@ namespace Segra.Backend.Core
             {
                 Log.Error($"Failed to save settings: {ex.Message}");
             }
+
+            // Every settings change is saved through here, so the always-on buffer picks up new values
+            OBSService.SyncAlwaysOnBuffer();
+        }
+
+        // Matches the JSON key by [JsonPropertyName] so renaming a C# property can't orphan a saved setting
+        private static PropertyInfo? FindSettingsProperty(string jsonName)
+        {
+            var properties = typeof(Settings).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+            return properties.FirstOrDefault(p => p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name == jsonName)
+                ?? properties.FirstOrDefault(p => p.Name == char.ToUpperInvariant(jsonName[0]) + jsonName.Substring(1));
         }
 
         public static bool LoadSettings()
@@ -73,7 +91,7 @@ namespace Segra.Backend.Core
 
                 Settings.Instance.BeginBulkUpdate();
 
-                using (JsonDocument document = JsonDocument.Parse(json))
+                using (JsonDocument document = JsonDocument.Parse(json, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true }))
                 {
                     JsonElement root = document.RootElement;
 
@@ -83,10 +101,7 @@ namespace Segra.Backend.Core
                         {
                             if (property.Value.ValueKind == JsonValueKind.Array)
                             {
-                                var propertyName = char.ToUpperInvariant(property.Name[0]) + property.Name.Substring(1);
-                                var targetProperty = typeof(Settings).GetProperty(
-                                    propertyName,
-                                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                                var targetProperty = FindSettingsProperty(property.Name);
 
                                 if (targetProperty != null && targetProperty.CanWrite)
                                 {
@@ -128,10 +143,7 @@ namespace Segra.Backend.Core
                             }
                             else
                             {
-                                var propertyName = char.ToUpperInvariant(property.Name[0]) + property.Name.Substring(1);
-                                var targetProperty = typeof(Settings).GetProperty(
-                                    propertyName,
-                                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                                var targetProperty = FindSettingsProperty(property.Name);
 
                                 if (targetProperty != null && targetProperty.CanWrite)
                                 {
@@ -447,6 +459,24 @@ namespace Segra.Backend.Core
                     current.RainbowSixSiege.Enabled = updated.RainbowSixSiege.Enabled;
                     hasChanges = true;
                 }
+                if (current.Wardogs.Enabled != updated.Wardogs.Enabled)
+                {
+                    Log.Information($"GameIntegrations.Wardogs.Enabled changed from '{current.Wardogs.Enabled}' to '{updated.Wardogs.Enabled}'");
+                    current.Wardogs.Enabled = updated.Wardogs.Enabled;
+                    hasChanges = true;
+                }
+                if (current.Deadlock.Enabled != updated.Deadlock.Enabled)
+                {
+                    Log.Information($"GameIntegrations.Deadlock.Enabled changed from '{current.Deadlock.Enabled}' to '{updated.Deadlock.Enabled}'");
+                    current.Deadlock.Enabled = updated.Deadlock.Enabled;
+                    hasChanges = true;
+                }
+                if (current.Battlefield6.Enabled != updated.Battlefield6.Enabled)
+                {
+                    Log.Information($"GameIntegrations.Battlefield6.Enabled changed from '{current.Battlefield6.Enabled}' to '{updated.Battlefield6.Enabled}'");
+                    current.Battlefield6.Enabled = updated.Battlefield6.Enabled;
+                    hasChanges = true;
+                }
             }
 
             if (updatedSettings.Games != null)
@@ -508,6 +538,13 @@ namespace Segra.Backend.Core
             {
                 Log.Information($"ReplayBufferMaxSize changed from '{settings.ReplayBufferMaxSize}' to '{updatedSettings.ReplayBufferMaxSize}'");
                 settings.ReplayBufferMaxSize = updatedSettings.ReplayBufferMaxSize;
+                hasChanges = true;
+            }
+
+            if (settings.AlwaysOnReplayBuffer != updatedSettings.AlwaysOnReplayBuffer)
+            {
+                Log.Information($"AlwaysOnReplayBuffer changed from '{settings.AlwaysOnReplayBuffer}' to '{updatedSettings.AlwaysOnReplayBuffer}'");
+                settings.AlwaysOnReplayBuffer = updatedSettings.AlwaysOnReplayBuffer;
                 hasChanges = true;
             }
 
@@ -601,6 +638,11 @@ namespace Segra.Backend.Core
                 {
                     Log.Warning($"Codec change before OBS initialization, skipping");
                 }
+                else if (!AppState.Instance.Codecs.Any(c => c.InternalEncoderId.Equals(updatedSettings.Codec.InternalEncoderId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    Log.Warning($"Codec '{updatedSettings.Codec.FriendlyName}' is not available on this system, keeping '{settings.Codec.FriendlyName}'");
+                    hasChanges = true;
+                }
                 else
                 {
                     Log.Information($"Codec changed from '{settings.Codec.FriendlyName}' to '{updatedSettings.Codec.FriendlyName}'");
@@ -640,7 +682,8 @@ namespace Segra.Backend.Core
 
             if (!settings.InputDevices.SequenceEqual(updatedSettings.InputDevices, new DeviceSettingEqualityComparer()))
             {
-                Log.Information($"InputDevice changed from '[{string.Join(", ", settings.InputDevices.Select(d => $"{d.Name}"))}]' to '[{string.Join(", ", updatedSettings.InputDevices.Select(d => $"{d.Name}"))}]'");
+                static string Describe(DeviceSetting d) => $"{d.Name} (noiseSuppression={d.NoiseSuppression}, forceMono={d.ForceMono})";
+                Log.Information($"InputDevice changed from '[{string.Join(", ", settings.InputDevices.Select(Describe))}]' to '[{string.Join(", ", updatedSettings.InputDevices.Select(Describe))}]'");
                 settings.InputDevices = updatedSettings.InputDevices;
                 hasChanges = true;
             }
@@ -649,20 +692,6 @@ namespace Segra.Backend.Core
             {
                 Log.Information($"OutputDevice changed from '[{string.Join(", ", settings.OutputDevices.Select(d => $"{d.Name}"))}]' to '[{string.Join(", ", updatedSettings.OutputDevices.Select(d => $"{d.Name}"))}]'");
                 settings.OutputDevices = updatedSettings.OutputDevices;
-                hasChanges = true;
-            }
-
-            if (settings.ForceMonoInputSources != updatedSettings.ForceMonoInputSources)
-            {
-                Log.Information($"ForceMonoInputSources changed from '{settings.ForceMonoInputSources}' to '{updatedSettings.ForceMonoInputSources}'");
-                settings.ForceMonoInputSources = updatedSettings.ForceMonoInputSources;
-                hasChanges = true;
-            }
-
-            if (settings.InputNoiseSuppression != updatedSettings.InputNoiseSuppression)
-            {
-                Log.Information($"InputNoiseSuppression changed from '{settings.InputNoiseSuppression}' to '{updatedSettings.InputNoiseSuppression}'");
-                settings.InputNoiseSuppression = updatedSettings.InputNoiseSuppression;
                 hasChanges = true;
             }
 
@@ -848,10 +877,10 @@ namespace Segra.Backend.Core
                 hasChanges = true;
             }
 
-            if (updatedSettings.Keybindings != null)
+            if (updatedSettings.Hotkeys != null)
             {
-                settings.Keybindings = updatedSettings.Keybindings;
-                KeybindCaptureService.RefreshKeybindingsCache();
+                settings.Hotkeys = updatedSettings.Hotkeys;
+                HotkeyCaptureService.RefreshHotkeysCache();
                 hasChanges = true;
             }
 
@@ -1110,7 +1139,8 @@ namespace Segra.Backend.Core
             {
                 Id = "default",
                 Name = "Default Device",
-                Volume = 1.0f
+                Volume = 1.0f,
+                NoiseSuppression = true
             });
             Settings.Instance.OutputDevices.Add(new DeviceSetting
             {

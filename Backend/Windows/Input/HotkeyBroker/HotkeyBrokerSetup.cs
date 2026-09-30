@@ -30,7 +30,7 @@ namespace Segra.Backend.Windows.Input.HotkeyBroker
             AppState.Instance.HotkeyBroker = new HotkeyBrokerStatus(installed, upToDate, connected, declined);
 
             if (needsInstall && !declined && Interlocked.Exchange(ref _autoAttempted, 1) == 0)
-                _ = InstallAsync();
+                _ = Task.Run(InstallAsync);
         }
 
         /// <summary>Runs the elevated install (one UAC prompt) and records the outcome.</summary>
@@ -68,7 +68,7 @@ namespace Segra.Backend.Windows.Input.HotkeyBroker
             finally
             {
                 Interlocked.Exchange(ref _busy, 0);
-                KeybindCaptureService.PublishBrokerStatus();
+                HotkeyCaptureService.PublishBrokerStatus();
             }
         }
 

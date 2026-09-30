@@ -1,7 +1,9 @@
-import { useSettings } from '../../Context/SettingsContext';
-import { useAppState } from '../../Context/AppStateContext';
-import { sendMessageToBackend } from '../../Utils/MessageUtils';
+import { useSettings, useSettingsUpdater } from '../../Context/SettingsContext';
 import { GameIntegrations } from '../../Models/types';
+import {
+  usePendingRecordingSettings,
+  RECORDING_SETTING_GROUPS,
+} from '../../Hooks/usePendingRecordingSettings';
 
 interface GameIntegration {
   id: string;
@@ -49,6 +51,27 @@ const GAME_INTEGRATIONS: GameIntegration[] = [
     settingsKey: 'rainbowSixSiege',
     bookmarks: ['Kills', 'Deaths'],
     backgroundImage: 'https://segra.tv/api/games/cover/ar6elp',
+  },
+  {
+    id: 'wardogs',
+    name: 'WARDOGS',
+    settingsKey: 'wardogs',
+    bookmarks: ['Kills', 'Deaths'],
+    backgroundImage: 'https://segra.tv/api/games/cover/cocs6d',
+  },
+  {
+    id: 'deadlock',
+    name: 'Deadlock',
+    settingsKey: 'deadlock',
+    bookmarks: ['Kills', 'Assists', 'Deaths'],
+    backgroundImage: 'https://segra.tv/api/games/cover/cobc7s',
+  },
+  {
+    id: 'battlefield-6',
+    name: 'Battlefield 6',
+    settingsKey: 'battlefield6',
+    bookmarks: ['Kills', 'Deaths'],
+    backgroundImage: 'https://segra.tv/api/games/cover/coa5zt',
   },
   {
     id: 'gta',
@@ -113,7 +136,6 @@ interface GameIntegrationCardProps {
   integration: GameIntegration;
   enabled: boolean;
   showBackground: boolean;
-  isRecording: boolean;
   onToggle: (enabled: boolean) => void;
 }
 
@@ -121,11 +143,12 @@ function GameIntegrationCard({
   integration,
   enabled,
   showBackground,
-  isRecording,
   onToggle,
 }: GameIntegrationCardProps) {
   return (
-    <div className="relative bg-base-200 p-4 rounded-lg border border-custom overflow-hidden">
+    <label
+      className={`relative block bg-base-200 px-4 py-4 rounded-lg border overflow-hidden cursor-pointer transition-colors ${enabled ? 'border-primary/80' : 'border-base-400'}`}
+    >
       {/* Background image */}
       {showBackground && (
         <div
@@ -136,14 +159,21 @@ function GameIntegrationCard({
           }}
         />
       )}
-      <div className="relative z-10 flex flex-col h-full">
-        <div className="flex items-center gap-2 mb-2">
-          <h3 className="text-lg font-semibold">{integration.name}</h3>
+      <div className="relative z-10">
+        <div className="flex items-center gap-2">
+          <h3 className="text-base font-semibold truncate">{integration.name}</h3>
           {integration.isBeta && (
             <span className="badge badge-primary badge-sm drop-shadow-md">Beta</span>
           )}
+          <input
+            type="checkbox"
+            className="sr-only"
+            aria-label={integration.name}
+            checked={enabled}
+            onChange={(e) => onToggle(e.target.checked)}
+          />
         </div>
-        <div className="flex flex-wrap gap-1 mb-4">
+        <div className="flex flex-wrap gap-1 mt-1.5">
           {integration.bookmarks.map((bookmark) => (
             <span
               key={bookmark}
@@ -154,32 +184,20 @@ function GameIntegrationCard({
           ))}
         </div>
         {integration.warningText && (
-          <p className="text-xs text-warning mb-3">{integration.warningText}</p>
+          <p className="text-xs text-warning mt-1">{integration.warningText}</p>
         )}
-        <div className="mt-auto">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              className="toggle toggle-primary"
-              checked={enabled}
-              disabled={isRecording}
-              onChange={(e) => onToggle(e.target.checked)}
-            />
-            <span className="text-sm">{enabled ? 'Enabled' : 'Disabled'}</span>
-          </label>
-        </div>
       </div>
-    </div>
+    </label>
   );
 }
 
 export default function GameIntegrationsSection() {
   const settings = useSettings();
-  const appState = useAppState();
+  const updateSettings = useSettingsUpdater();
+  const hasPendingChanges = usePendingRecordingSettings(RECORDING_SETTING_GROUPS.gameIntegrations);
 
   const handleToggle = (settingsKey: GameIntegration['settingsKey'], enabled: boolean) => {
-    sendMessageToBackend('UpdateSettings', {
-      ...settings,
+    updateSettings({
       gameIntegrations: {
         ...settings.gameIntegrations,
         [settingsKey]: {
@@ -192,20 +210,25 @@ export default function GameIntegrationsSection() {
 
   return (
     <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
-      <h2 className="text-xl font-semibold mb-2">Game Integrations</h2>
-      <p className="text-sm opacity-80 mb-4">
+      <div className="flex items-center gap-2 mb-2">
+        <h2 className="text-xl font-semibold">Game Integrations</h2>
+        {hasPendingChanges && (
+          <span className="text-xs text-warning">(applies to next recording)</span>
+        )}
+      </div>
+      <p className="text-sm opacity-70 mb-4">
         Enable automatic event detection for supported games. When enabled, Segra will automatically
         bookmark kills, goals, and other events during gameplay.
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* Up to 4 per row, based on the section's own width rather than the window */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(max(13rem,calc((100%_-_2.25rem)/4)),1fr))] gap-3">
         {GAME_INTEGRATIONS.map((integration) => (
           <GameIntegrationCard
             key={integration.id}
             integration={integration}
             enabled={settings.gameIntegrations[integration.settingsKey].enabled}
             showBackground={settings.showGameBackground}
-            isRecording={appState.recording != null || appState.preRecording != null}
             onToggle={(enabled) => handleToggle(integration.settingsKey, enabled)}
           />
         ))}
