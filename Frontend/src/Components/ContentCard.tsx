@@ -180,12 +180,12 @@ export default function ContentCard({
     return (
       <div
         className={
-          type === 'Highlight'
+          type === 'Highlight' || type === 'Lowlight'
             ? 'card card-compact w-full relative highlight-card'
             : 'card card-compact bg-base-300 text-gray-300 w-full border border-[#49515b]'
         }
       >
-        {type === 'Highlight' && (
+        {(type === 'Highlight' || type === 'Lowlight') && (
           <div className="absolute inset-0 rounded-lg highlight-border">
             <div className="card absolute inset-px bg-base-300 z-2">
               <figure className="relative aspect-w-16 aspect-h-9">
@@ -209,7 +209,7 @@ export default function ContentCard({
           </div>
         )}
 
-        {type !== 'Highlight' && (
+        {type !== 'Highlight' && type !== 'Lowlight' && (
           <>
             {/* Mirrors the loaded card's figure/body exactly so the skeleton is the same height. */}
             <figure className="relative aspect-video bg-black">
