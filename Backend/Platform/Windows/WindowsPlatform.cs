@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using Serilog;
 using NAudio.Wave;
-using NAudio.CoreAudioApi;
 using NAudio.Wave.SampleProviders;
 using Segra.Backend.App;
 using Segra.Backend.Core.Models;
@@ -166,8 +165,8 @@ namespace Segra.Backend.Platform.Windows
             var sampleProvider = audioReader.ToSampleProvider();
             var volumeProvider = new VolumeSampleProvider(sampleProvider) { Volume = volume };
 
-            using var waveOut = new WasapiOut(AudioClientShareMode.Shared, 100);
-            waveOut.Init(volumeProvider);
+            using var waveOut = new WasapiPlayerBuilder().WithSharedMode().WithLatency(100).Build();
+            waveOut.Init(volumeProvider.ToWaveProvider());
             waveOut.Play();
 
             while (waveOut.PlaybackState == PlaybackState.Playing)
@@ -184,7 +183,7 @@ namespace Segra.Backend.Platform.Windows
     internal sealed class WindowsAudioStreamPlayer : IAudioStreamPlayer
     {
         private readonly object gate = new();
-        private WasapiOut? waveOut;
+        private WasapiPlayer? waveOut;
         private BufferedWaveProvider? provider;
 
         public void Start(int sampleRate, int channels)
@@ -197,13 +196,16 @@ namespace Segra.Backend.Platform.Windows
                     return;
 
                 provider = new BufferedWaveProvider(
-                    WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels))
+                    WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels), TimeSpan.FromSeconds(1))
                 {
-                    BufferDuration = TimeSpan.FromSeconds(1),
                     DiscardOnBufferOverflow = true
                 };
 
-                waveOut = new WasapiOut(AudioClientShareMode.Shared, 40);
+                // Silence cushion so jittery PCM delivery doesn't underrun (crackle) right after a restart.
+                var cushion = new byte[sampleRate / 20 * provider.WaveFormat.BlockAlign];
+                provider.AddSamples(cushion, 0, cushion.Length);
+
+                waveOut = new WasapiPlayerBuilder().WithSharedMode().WithLatency(40).Build();
                 try
                 {
                     waveOut.Init(provider);

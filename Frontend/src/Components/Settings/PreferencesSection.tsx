@@ -4,6 +4,7 @@ import CloudBadge from '../CloudBadge';
 import DropdownSelect from '../DropdownSelect';
 import RangeSlider from '../RangeSlider';
 import { CloseButtonAction, Settings as SettingsType, StartupWindowMode } from '../../Models/types';
+import { useAppState } from '../../Context/AppStateContext';
 
 interface PreferencesSectionProps {
   settings: SettingsType;
@@ -11,6 +12,7 @@ interface PreferencesSectionProps {
 }
 
 export default function PreferencesSection({ settings, updateSettings }: PreferencesSectionProps) {
+  const appState = useAppState();
   const [draggingSoundVolume, setDraggingSoundVolume] = useState<number | null>(null);
   const soundVolume = draggingSoundVolume ?? settings.soundEffectsVolume;
 
@@ -55,7 +57,7 @@ export default function PreferencesSection({ settings, updateSettings }: Prefere
 
   return (
     <>
-      <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+      <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
         <h2 className="text-xl font-semibold mb-4">App</h2>
         <div className="grid grid-cols-2 gap-4">
           <div className="form-control">
@@ -85,7 +87,14 @@ export default function PreferencesSection({ settings, updateSettings }: Prefere
             </label>
             <DropdownSelect
               items={[
-                { value: 'Minimize', label: 'Minimize to Tray' },
+                {
+                  value: 'Minimize',
+                  // Linux has no tray; launching Segra again brings the window back
+                  label:
+                    appState.platform === 'linux'
+                      ? 'Keep Running in Background'
+                      : 'Minimize to Tray',
+                },
                 { value: 'Exit', label: 'Close App' },
               ]}
               value={settings.closeButtonAction}
@@ -128,7 +137,7 @@ export default function PreferencesSection({ settings, updateSettings }: Prefere
         </div>
       </div>
 
-      <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+      <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
         <h2 className="text-xl font-semibold mb-4">Interface</h2>
         <div className="flex flex-col gap-3">
           {interfaceToggles.map(({ key, label, description }) => (

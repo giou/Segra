@@ -477,6 +477,24 @@ namespace Segra.Backend.Core
                     current.Battlefield6.Enabled = updated.Battlefield6.Enabled;
                     hasChanges = true;
                 }
+                if (current.Valorant.Enabled != updated.Valorant.Enabled)
+                {
+                    Log.Information($"GameIntegrations.Valorant.Enabled changed from '{current.Valorant.Enabled}' to '{updated.Valorant.Enabled}'");
+                    current.Valorant.Enabled = updated.Valorant.Enabled;
+                    hasChanges = true;
+                }
+                if (current.Overwatch.Enabled != updated.Overwatch.Enabled)
+                {
+                    Log.Information($"GameIntegrations.Overwatch.Enabled changed from '{current.Overwatch.Enabled}' to '{updated.Overwatch.Enabled}'");
+                    current.Overwatch.Enabled = updated.Overwatch.Enabled;
+                    hasChanges = true;
+                }
+                if (current.Fortnite.Enabled != updated.Fortnite.Enabled)
+                {
+                    Log.Information($"GameIntegrations.Fortnite.Enabled changed from '{current.Fortnite.Enabled}' to '{updated.Fortnite.Enabled}'");
+                    current.Fortnite.Enabled = updated.Fortnite.Enabled;
+                    hasChanges = true;
+                }
             }
 
             if (updatedSettings.Games != null)
@@ -573,6 +591,14 @@ namespace Segra.Backend.Core
             {
                 Log.Information($"EnableHdr changed from '{settings.EnableHdr}' to '{updatedSettings.EnableHdr}'");
                 settings.EnableHdr = updatedSettings.EnableHdr;
+                hasChanges = true;
+            }
+
+            if (settings.GpuPriority != updatedSettings.GpuPriority)
+            {
+                Log.Information($"GpuPriority changed from '{settings.GpuPriority}' to '{updatedSettings.GpuPriority}'");
+                settings.GpuPriority = updatedSettings.GpuPriority;
+                OBSService.ApplyGpuPrioritySetting();
                 hasChanges = true;
             }
 

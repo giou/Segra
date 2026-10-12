@@ -8,6 +8,7 @@ export type AudioTrackType = 'mix' | 'input' | 'output';
 
 export type StartupWindowMode = 'Normal' | 'Minimized';
 export type CloseButtonAction = 'Minimize' | 'Exit';
+export type GpuPriority = 'High' | 'Realtime';
 
 export interface Content {
   id: string;
@@ -21,7 +22,7 @@ export interface Content {
   fileSizeKb: number;
   duration: string;
   createdAt: string;
-  uploadId?: string;
+  uploadUrl?: string;
   igdbId?: number;
   gameExePath?: string;
   isImported: boolean;
@@ -46,9 +47,11 @@ export interface HotkeyBrokerStatus {
 
 export interface State {
   gpuVendor: GpuVendor;
+  integratedGpuVendors: GpuVendor[];
   preRecording?: PreRecording;
   recording?: Recording;
   alwaysOnBufferActive: boolean;
+  isFinishingRecording: boolean;
   hasLoadedObs: boolean;
   content: Content[];
   inputDevices: AudioDevice[];
@@ -64,6 +67,9 @@ export interface State {
   recordingDriveUsedGb: number | null;
   recordingDriveFreeGb: number | null;
   cacheFolder: string;
+  platform: 'windows' | 'linux';
+  usesScreenSharePicker: boolean;
+  hotkeysNeedInputGroup: boolean;
   // Windows only; the backend leaves it unset elsewhere.
   hotkeyBroker?: HotkeyBrokerStatus | null;
 }
@@ -207,6 +213,12 @@ export interface GameSetting {
   discardSessionsWithoutBookmarksOverride: boolean | null;
   enableHdrOverride: boolean | null;
   volumeOverride: number | null; // Multiplier on top of the configured device volume (0-2)
+  highlightPaddingOverride: GameHighlightPaddingOverride | null;
+}
+
+export interface GameHighlightPaddingOverride {
+  before: number; // Seconds before a highlight moment
+  after: number; // Seconds after a highlight moment
 }
 
 export interface GameIntegrationSettings {
@@ -228,6 +240,9 @@ export interface GameIntegrations {
   wardogs: GameIntegrationSettings;
   deadlock: GameIntegrationSettings;
   battlefield6: GameIntegrationSettings;
+  valorant: GameIntegrationSettings;
+  overwatch: GameIntegrationSettings;
+  fortnite: GameIntegrationSettings;
 }
 
 export type ClipEncoder = 'gpu' | 'cpu';
@@ -302,6 +317,7 @@ export interface Settings {
   frameRate: number;
   stretch4By3: boolean;
   enableHdr: boolean; // When false, recordings are always SDR even on an HDR display
+  gpuPriority: GpuPriority;
   rateControl: string;
   crfValue: number;
   cqLevel: number;
@@ -321,6 +337,7 @@ export interface Settings {
   displayCaptureMethod: DisplayCaptureMethod;
   selectedOBSVersion: string | null; // null means automatic (latest non-beta)
   hotkeyBrokerDeclinedVersion: string | null; // backend-owned, mirrored only
+  pipeWireRestoreToken: string | null; // backend-owned, mirrored only
   enableAi: boolean;
   enableLowlights: boolean;
   autoGenerateHighlights: boolean;
@@ -371,8 +388,10 @@ export interface Settings {
 
 export const initialState: State = {
   gpuVendor: GpuVendor.Unknown,
+  integratedGpuVendors: [],
   recording: undefined,
   alwaysOnBufferActive: false,
+  isFinishingRecording: false,
   hasLoadedObs: false,
   content: [],
   inputDevices: [],
@@ -388,6 +407,9 @@ export const initialState: State = {
   recordingDriveUsedGb: null,
   recordingDriveFreeGb: null,
   cacheFolder: '',
+  platform: 'windows',
+  usesScreenSharePicker: false,
+  hotkeysNeedInputGroup: false,
 };
 
 export const initialSettings: Settings = {
@@ -395,6 +417,7 @@ export const initialSettings: Settings = {
   frameRate: 30,
   stretch4By3: true,
   enableHdr: true,
+  gpuPriority: 'Realtime',
   rateControl: 'VBR',
   crfValue: 23,
   cqLevel: 20,
@@ -414,6 +437,7 @@ export const initialSettings: Settings = {
   displayCaptureMethod: 'Auto',
   selectedOBSVersion: null, // null means automatic (latest non-beta)
   hotkeyBrokerDeclinedVersion: null,
+  pipeWireRestoreToken: null,
   enableAi: true,
   enableLowlights: false,
   autoGenerateHighlights: true,
@@ -479,6 +503,9 @@ export const initialSettings: Settings = {
     wardogs: { enabled: true },
     deadlock: { enabled: true },
     battlefield6: { enabled: true },
+    valorant: { enabled: true },
+    overwatch: { enabled: true },
+    fortnite: { enabled: true },
   },
 };
 
@@ -525,6 +552,11 @@ export interface AiProgress {
 export interface MigrationStatus {
   isRunning: boolean;
   currentMigration: string | null;
+  step: number;
+  stepCount: number;
+  progress: number | null;
+  progressTotal: number | null;
+  progressUnit: string | null;
 }
 
 export interface GameResponse {

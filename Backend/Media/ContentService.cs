@@ -90,6 +90,8 @@ namespace Segra.Backend.Media
 
                 await File.WriteAllTextAsync(metadataFilePath, metadataJson);
                 Log.Information($"Metadata file created at: {metadataFilePath}");
+
+                await EmbeddedMetadataService.EmbedAsync(metadataContent);
                 return id;
             }
             catch (Exception ex)
@@ -324,6 +326,7 @@ namespace Segra.Backend.Media
 
                     content.Game = canonicalName;
                     if (moved && newFilePath != null) content.FilePath = newFilePath;
+                    EmbeddedMetadataService.Schedule(content.Id);
 
                     changedCount++;
                 }
@@ -593,7 +596,7 @@ namespace Segra.Backend.Media
             }
         }
 
-        public static async Task DeleteContent(string filePath, Content.ContentType type, string? id, bool sendToFrontend = true)
+        public static async Task DeleteContent(string filePath, Content.ContentType type, string? id, bool sendToFrontend = true, bool reloadState = true)
         {
             try
             {
@@ -719,7 +722,10 @@ namespace Segra.Backend.Media
             }
             finally
             {
-                await SettingsService.LoadContentFromFolderIntoState(sendToFrontend);
+                if (reloadState)
+                {
+                    await SettingsService.LoadContentFromFolderIntoState(sendToFrontend);
+                }
             }
         }
 
@@ -903,6 +909,7 @@ namespace Segra.Backend.Media
                     }
 
                     contentItem.AddBookmark(bookmark);
+                    EmbeddedMetadataService.Schedule(contentItem.Id);
 
                     await MessageService.SendStateToFrontend("Added bookmark");
                     Log.Information($"Added bookmark of type {bookmarkType} at {timeString} to {metadataFilePath}");
@@ -961,6 +968,7 @@ namespace Segra.Backend.Media
                     {
                         contentItem.Bookmarks = contentItem.Bookmarks.Where(b => b.Id != bookmarkId).ToList();
                     }
+                    EmbeddedMetadataService.Schedule(contentItem.Id);
 
                     await MessageService.SendStateToFrontend("Deleted bookmark");
                     Log.Information($"Deleted bookmark with id {bookmarkId} from {metadataFilePath}");
@@ -1054,6 +1062,7 @@ namespace Segra.Backend.Media
 
                     Log.Information($"Updated title for {id} to '{newTitle}'");
                     await SettingsService.LoadContentFromFolderIntoState(true);
+                    EmbeddedMetadataService.Schedule(id);
                     await MessageService.SendStateToFrontend("Renamed content");
                 }
                 else

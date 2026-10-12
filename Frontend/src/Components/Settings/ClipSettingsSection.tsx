@@ -9,6 +9,7 @@ import {
 } from '../../Models/types';
 import { sendMessageToBackend } from '../../Utils/MessageUtils';
 import { useAppState } from '../../Context/AppStateContext';
+import HevcExtensionWarning from '../HevcExtensionWarning';
 
 interface ClipSettingsSectionProps {
   settings: SettingsType;
@@ -112,7 +113,7 @@ export default function ClipSettingsSection({
   };
 
   return (
-    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
       <h2 className="text-xl font-semibold mb-4">Clip Settings</h2>
 
       {/* Quality Preset Selector */}
@@ -158,7 +159,7 @@ export default function ClipSettingsSection({
       </div>
 
       {/* Advanced Settings - Only show when Custom preset is selected */}
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {settings.clipQualityPreset === 'custom' && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
@@ -378,6 +379,8 @@ export default function ClipSettingsSection({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {settings.clipCodec === 'h265' && <HevcExtensionWarning className="mt-3" />}
 
       {/* Keep Separate Audio Tracks */}
       {settings.enableSeparateAudioTracks && (

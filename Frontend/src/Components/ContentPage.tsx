@@ -8,12 +8,16 @@ import type { LucideIcon } from 'lucide-react';
 import { FileUp, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { sendMessageToBackend } from '../Utils/MessageUtils';
-import ContentFilters, { SortOption } from './ContentFilters';
+import ContentFilters, { ALL_GAMES, GameOption, IMPORTED, SortOption } from './ContentFilters';
+import { useSettings } from '../Context/SettingsContext';
 import { useModal } from '../Context/ModalContext';
 import { useImports } from '../Context/ImportContext';
 import Button from './Button';
 import { readSortOption } from './SectionView';
 import { useDeleteConfirmation } from '../Hooks/useDeleteConfirmation';
+
+// Imports that carried no Segra metadata have no game, so they are only listed under Imported
+const isUnknownImport = (item: Content) => item.isImported && item.game === 'Unknown';
 
 // Escape a filename for use inside a CSS attribute-selector string. Windows
 // filenames can't contain " or \, but escape defensively all the same.
@@ -62,49 +66,68 @@ export default function ContentPage({
     () => state.content.filter((video) => video.type === contentType),
     [state.content, contentType],
   );
-  const [selectedGames, setSelectedGames] = useState<string[]>(() => {
+  const { games: gameSettings, airplaneMode } = useSettings();
+  const [selectedGame, setSelectedGame] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem(`${sectionId}-filters`);
-      return saved ? JSON.parse(saved) : [];
+      const saved = JSON.parse(localStorage.getItem(`${sectionId}-filters`) ?? 'null');
+      // Older versions stored a multi-select array
+      if (Array.isArray(saved)) return saved.length === 1 ? saved[0] : ALL_GAMES;
+      return typeof saved === 'string' ? saved : ALL_GAMES;
     } catch {
-      return [];
+      return ALL_GAMES;
     }
   });
 
   const [sortOption, setSortOption] = useState<SortOption>(() => readSortOption(sectionId));
 
-  const uniqueGames = useMemo(() => {
-    const games = contentItems.map((item) => item.game);
-    const uniqueGameList = [...new Set(games)].sort();
-    // Add "Imported" to the list if any items are imported
-    if (contentItems.some((item) => item.isImported)) {
-      return ['Imported', ...uniqueGameList];
+  const gameOptions = useMemo(() => {
+    const iconFor = (item: Content): string | null => {
+      const listed =
+        state.gameList.find((g) => item.igdbId != null && g.igdbId === item.igdbId) ??
+        state.gameList.find((g) => g.name === item.game);
+      const setting = gameSettings.find((g) => g.name === item.game);
+      const iconId = listed?.icon || setting?.icon;
+      if (iconId && !airplaneMode) return `https://segra.tv/api/games/icon/${iconId}`;
+      if (setting?.customIcon) return `data:image/png;base64,${setting.customIcon}`;
+      return null;
+    };
+
+    const options = new Map<string, GameOption>();
+    for (const item of contentItems) {
+      if (isUnknownImport(item)) continue;
+      const existing = options.get(item.game);
+      if (existing) existing.count++;
+      else
+        options.set(item.game, { key: item.game, name: item.game, icon: iconFor(item), count: 1 });
     }
-    return uniqueGameList;
-  }, [contentItems]);
+    const sorted = [...options.values()].sort(
+      (a, b) => b.count - a.count || a.name.localeCompare(b.name),
+    );
+
+    const importedCount = contentItems.filter((item) => item.isImported).length;
+    return importedCount > 0
+      ? [...sorted, { key: IMPORTED, name: 'Imported', icon: null, count: importedCount }]
+      : sorted;
+  }, [contentItems, state.gameList, gameSettings, airplaneMode]);
 
   useEffect(() => {
-    const availableFilters = new Set(uniqueGames);
-
-    setSelectedGames((prev) => {
-      const validFilters = prev.filter((game) => availableFilters.has(game));
-      return validFilters.length === prev.length ? prev : validFilters;
-    });
-  }, [uniqueGames]);
+    if (selectedGame !== ALL_GAMES && !gameOptions.some((g) => g.key === selectedGame)) {
+      setSelectedGame(ALL_GAMES);
+    }
+  }, [gameOptions, selectedGame]);
 
   const filteredItems = useMemo(() => {
     let filtered = [...contentItems];
 
-    if (selectedGames.length > 0) {
-      filtered = filtered.filter((item) => {
-        if (selectedGames.includes('Imported') && item.isImported) {
-          return true;
-        }
-        return selectedGames.filter((g) => g !== 'Imported').includes(item.game);
-      });
+    if (selectedGame !== ALL_GAMES) {
+      filtered = filtered.filter((item) =>
+        selectedGame === IMPORTED
+          ? item.isImported
+          : !isUnknownImport(item) && item.game === selectedGame,
+      );
     }
 
-    filtered.sort((a, b) => {
+    const byOption = (a: (typeof filtered)[number], b: (typeof filtered)[number]) => {
       switch (sortOption) {
         case 'newest':
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
@@ -126,15 +149,17 @@ export default function ContentPage({
         default:
           return 0;
       }
-    });
+    };
+
+    // A compressed copy shares its original's date, so ties put the compressed copy first
+    filtered.sort((a, b) => byOption(a, b) || Number(b.compressed) - Number(a.compressed));
 
     return filtered;
-  }, [contentItems, selectedGames, sortOption]);
+  }, [contentItems, selectedGame, sortOption]);
 
-  const handleGameFilterChange = (games: string[]) => {
-    setSelectedGames(games);
+  const handleGameFilterChange = (game: string) => {
+    setSelectedGame(game);
     setSelectedItems(new Set());
-    localStorage.setItem(`${sectionId}-filters`, JSON.stringify(games));
   };
 
   const handleSortChange = (option: SortOption) => {
@@ -506,11 +531,12 @@ export default function ContentPage({
             </Button>
           )}
           <ContentFilters
-            uniqueGames={uniqueGames}
+            games={gameOptions}
+            totalCount={contentItems.length}
             onGameFilterChange={handleGameFilterChange}
             onSortChange={handleSortChange}
             sectionId={sectionId}
-            selectedGames={selectedGames}
+            selectedGame={selectedGame}
             sortOption={sortOption}
           />
         </div>

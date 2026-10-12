@@ -22,27 +22,95 @@ namespace Segra.Backend.Media
         private static readonly Dictionary<string, CancellationTokenSource> _activeUploads = new();
         private static readonly object _uploadLock = new();
 
-        public static void CancelUpload(string fileName)
+        public static void CancelUpload(string uploadId)
         {
-            Log.Information($"[Upload] Cancel requested for: {fileName}");
+            Log.Information($"[Upload] Cancel requested for: {uploadId}");
 
             lock (_uploadLock)
             {
-                if (_activeUploads.TryGetValue(fileName, out var cts))
+                if (_activeUploads.TryGetValue(uploadId, out var cts))
                 {
                     cts.Cancel();
-                    Log.Information($"[Upload] Cancelled upload for: {fileName}");
+                    Log.Information($"[Upload] Cancelled upload for: {uploadId}");
                 }
                 else
                 {
-                    Log.Warning($"[Upload] No active upload found for: {fileName}");
+                    Log.Warning($"[Upload] No active upload found for: {uploadId}");
                 }
+            }
+        }
+
+        private static int _staleUploadCheckStarted;
+
+        // Runs once per session, the first time the user is logged in
+        public static void CheckStaleUploads()
+        {
+            if (Settings.Instance.AirplaneMode) return;
+            if (Interlocked.Exchange(ref _staleUploadCheckStarted, 1) == 1) return;
+            _ = Task.Run(ClearStaleUploadUrls);
+        }
+
+        // Clears upload links to videos that no longer exist on the user's segra.tv account
+        private static async Task ClearStaleUploadUrls()
+        {
+            try
+            {
+                // Content can still be loading at startup, give it up to 5 seconds
+                for (int i = 0; i < 20 && AppState.Instance.Content.Count == 0; i++)
+                    await Task.Delay(250);
+
+                var uploads = AppState.Instance.Content.Where(content => !string.IsNullOrEmpty(content.UploadUrl)).ToList();
+
+                if (uploads.Count == 0) return;
+
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var request = new HttpRequestMessage(HttpMethod.Get, "https://segra.tv/api/user/videos");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await AuthService.GetJwtAsync());
+                using var response = await _httpClient.SendAsync(request, timeout.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    Log.Warning($"[Upload] Skipping stale upload check, video list request failed with {(int)response.StatusCode}");
+                    return;
+                }
+
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+                var existingIds = new List<string>();
+                foreach (var video in doc.RootElement.GetProperty("videos").EnumerateArray())
+                {
+                    foreach (string field in new[] { "id", "nano_id" })
+                    {
+                        if (video.TryGetProperty(field, out var value) && value.ValueKind == JsonValueKind.String)
+                            existingIds.Add(value.GetString()!);
+                    }
+                }
+
+                int cleared = 0;
+                foreach (var content in uploads)
+                {
+                    // The upload URL always contains the video's nano id or uuid
+                    if (existingIds.Any(id => content.UploadUrl!.Contains(id))) continue;
+                    string metadataPath = FolderNames.GetMetadataFilePath(content.Type, content.Id);
+                    if (await ContentService.UpdateMetadataFile(metadataPath, c => c.UploadUrl = null) != null)
+                        cleared++;
+                }
+
+                if (cleared > 0)
+                {
+                    Log.Information($"[Upload] Cleared {cleared} upload links to videos that are no longer on segra.tv");
+                    await SettingsService.LoadContentFromFolderIntoState(true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[Upload] Stale upload check failed: {ex.Message}");
             }
         }
 
         public static async Task HandleUploadContent(JsonElement message)
         {
             using var work = BackgroundWork.Begin();
+            // Same file can be uploaded more than once at a time, so each upload gets its own id
+            string uploadId = Guid.NewGuid().ToString("N");
             string fileName = "";
             string title = "";
             CancellationTokenSource? cts = null;
@@ -67,7 +135,7 @@ namespace Segra.Backend.Media
                 cts = new CancellationTokenSource();
                 lock (_uploadLock)
                 {
-                    _activeUploads[fileName] = cts;
+                    _activeUploads[uploadId] = cts;
                 }
 
                 var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
@@ -88,6 +156,7 @@ namespace Segra.Backend.Media
                             _ = MessageService.SendFrontendMessage("UploadProgress", new
                             {
                                 title,
+                                uploadId,
                                 fileName,
                                 thumbnailPath,
                                 progress = 100,
@@ -100,6 +169,7 @@ namespace Segra.Backend.Media
                             _ = MessageService.SendFrontendMessage("UploadProgress", new
                             {
                                 title,
+                                uploadId,
                                 fileName,
                                 thumbnailPath,
                                 progress,
@@ -133,6 +203,7 @@ namespace Segra.Backend.Media
                 await MessageService.SendFrontendMessage("UploadProgress", new
                 {
                     title,
+                    uploadId,
                     fileName,
                     thumbnailPath,
                     progress = 0,
@@ -151,12 +222,13 @@ namespace Segra.Backend.Media
 
                 lock (_uploadLock)
                 {
-                    _activeUploads.Remove(fileName);
+                    _activeUploads.Remove(uploadId);
                 }
 
                 await MessageService.SendFrontendMessage("UploadProgress", new
                 {
                     title,
+                    uploadId,
                     fileName,
                     progress = 100,
                     status = "done",
@@ -166,7 +238,7 @@ namespace Segra.Backend.Media
                 var responseContent = await response.Content.ReadAsStringAsync();
                 Log.Information($"Upload success: {responseContent}");
 
-                // Parse the response to extract the URL and update the content with uploadId
+                // Parse the response to extract the URL and store it on the content
                 if (!string.IsNullOrEmpty(responseContent))
                 {
                     try
@@ -179,32 +251,28 @@ namespace Segra.Backend.Media
                             string url = urlElement.GetString()!;
                             if (!string.IsNullOrEmpty(url))
                             {
-                                // Extract uploadId from the URL (after the last slash)
-                                string uploadId = url.Split('/').Last();
-                                Log.Information($"Extracted upload ID: {uploadId}");
-
-                                // Update the content with the uploadId (re-resolved by id in case state was reloaded mid-upload)
+                                // Update the content with the URL (re-resolved by id in case state was reloaded mid-upload)
                                 var contentToUpdate = AppState.Instance.Content.FirstOrDefault(c => c.Id == content.Id);
                                 Log.Information($"Content to update: {contentToUpdate?.FileName ?? "not found"}");
 
                                 if (contentToUpdate != null)
                                 {
-                                    contentToUpdate.UploadId = uploadId;
+                                    contentToUpdate.UploadUrl = url;
 
                                     // Also update the metadata file
                                     string metadataFilePath = FolderNames.GetMetadataFilePath(contentToUpdate.Type, contentToUpdate.Id);
 
                                     var updatedContent = await ContentService.UpdateMetadataFile(metadataFilePath, content =>
                                     {
-                                        content.UploadId = uploadId;
+                                        content.UploadUrl = url;
                                     });
 
                                     if (updatedContent != null)
                                     {
-                                        Log.Information($"Updated metadata file with upload ID: {metadataFilePath}");
+                                        Log.Information($"Updated metadata file with upload URL: {metadataFilePath}");
                                     }
 
-                                    Log.Information($"Updated content with upload ID: {uploadId}");
+                                    Log.Information($"Updated content with upload URL: {url}");
                                     await SettingsService.LoadContentFromFolderIntoState(true);
                                 }
 
@@ -233,12 +301,13 @@ namespace Segra.Backend.Media
 
                 lock (_uploadLock)
                 {
-                    _activeUploads.Remove(fileName);
+                    _activeUploads.Remove(uploadId);
                 }
 
                 await MessageService.SendFrontendMessage("UploadProgress", new
                 {
                     title,
+                    uploadId,
                     fileName,
                     progress = 0,
                     status = "error",
@@ -251,8 +320,7 @@ namespace Segra.Backend.Media
 
                 lock (_uploadLock)
                 {
-                    if (!string.IsNullOrEmpty(fileName))
-                        _activeUploads.Remove(fileName);
+                    _activeUploads.Remove(uploadId);
                 }
 
                 await MessageService.ShowModal(
@@ -265,6 +333,7 @@ namespace Segra.Backend.Media
                 await MessageService.SendFrontendMessage("UploadProgress", new
                 {
                     title,
+                    uploadId,
                     fileName,
                     progress = 0,
                     status = "error",

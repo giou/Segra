@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useSettings, useSettingsUpdater } from '../Context/SettingsContext';
+import { useScroll } from '../Context/ScrollContext';
 import { useUpdate } from '../Context/UpdateContext';
 import AccountSection from '../Components/Settings/AccountSection';
 import CaptureModeSection from '../Components/Settings/CaptureModeSection';
@@ -10,6 +11,7 @@ import AudioDevicesSection from '../Components/Settings/AudioDevicesSection';
 import HotkeysSection from '../Components/Settings/HotkeysSection';
 import PendingRecordingSettingsBanner from '../Components/Settings/PendingRecordingSettingsBanner';
 import HotkeyBrokerWarning from '../Components/Settings/HotkeyBrokerWarning';
+import InputGroupWarning from '../Components/Settings/InputGroupWarning';
 import GameDetectionSection from '../Components/Settings/GameDetectionSection';
 import GameIntegrationsSection from '../Components/Settings/GameIntegrationsSection';
 import HighlightsSection from '../Components/Settings/HighlightsSection';
@@ -33,7 +35,7 @@ const ALL_NAV_ITEMS: { id: SectionId; label: string }[] = [
 
 function SectionHeader({ id, children }: { id: string; children: React.ReactNode }) {
   return (
-    <div id={id} className="scroll-mt-24 mb-0">
+    <div id={id} className="scroll-mt-5 mb-0">
       <h2 className="text-sm font-semibold text-primary uppercase tracking-wider mb-2 mt-8 first:mt-0">
         {children}
       </h2>
@@ -52,6 +54,15 @@ export default function Settings() {
     [settings.airplaneMode],
   );
   const [activeSection, setActiveSection] = useState<SectionId>(navItems[0].id);
+  const { scrollPositions, setScrollPosition } = useScroll();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scrollTopRef = useRef(scrollPositions.settings);
+  const [isScrolled, setIsScrolled] = useState(scrollPositions.settings > 0);
+
+  useLayoutEffect(() => {
+    if (containerRef.current) containerRef.current.scrollTop = scrollTopRef.current;
+    return () => setScrollPosition('settings', scrollTopRef.current);
+  }, [setScrollPosition]);
 
   const scrollToSection = (id: SectionId) => {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
@@ -111,9 +122,11 @@ export default function Settings() {
   }, [navItems]);
 
   return (
-    <div className="min-h-full bg-base-200">
-      {/* Sticky Jump Nav */}
-      <div className="sticky top-0 z-50 bg-base-200 px-5 pt-5 pb-3">
+    <div className="flex h-full flex-col bg-base-200">
+      {/* Jump Nav, outside the scroller so its bottom line spans the scrollbar too */}
+      <div
+        className={`shrink-0 px-5 pt-5 pb-3 border-b transition-colors duration-300 ${isScrolled ? 'border-base-400/50' : 'border-transparent'}`}
+      >
         <div className="flex items-center gap-6">
           <h1 className="text-[1.75rem] font-bold">Settings</h1>
           <nav className="flex gap-1">
@@ -135,7 +148,14 @@ export default function Settings() {
       </div>
 
       {/* Content */}
-      <div className="settings-content p-5 space-y-6">
+      <div
+        ref={containerRef}
+        onScroll={(e) => {
+          scrollTopRef.current = e.currentTarget.scrollTop;
+          setIsScrolled(e.currentTarget.scrollTop > 0);
+        }}
+        className="settings-content min-h-0 flex-1 overflow-y-scroll p-5 space-y-6"
+      >
         <PendingRecordingSettingsBanner />
 
         {/* ACCOUNT */}
@@ -151,6 +171,7 @@ export default function Settings() {
         <CaptureModeSection settings={settings} updateSettings={updateSettings} />
         <HotkeysSection settings={settings} updateSettings={updateSettings} />
         <HotkeyBrokerWarning />
+        <InputGroupWarning />
         <VideoSettingsSection settings={settings} updateSettings={updateSettings} />
         <AudioDevicesSection settings={settings} updateSettings={updateSettings} />
 

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Settings as SettingsType, HotkeyAction } from '../../Models/types';
+import { sendMessageToBackend } from '../../Utils/MessageUtils';
 interface HotkeysSectionProps {
   settings: SettingsType;
   updateSettings: (updates: Partial<SettingsType>) => void;
@@ -90,6 +91,16 @@ const getActionRank = (action: HotkeyAction): number => {
 export default function HotkeysSection({ settings, updateSettings }: HotkeysSectionProps) {
   const [capturing, setCapturing] = useState<number | null>(null);
   const [pressedKeys, setPressedKeys] = useState<number[]>([]);
+  const isCapturing = capturing !== null;
+
+  // Global hotkeys also see keys pressed here
+  useEffect(() => {
+    if (!isCapturing) return;
+    sendMessageToBackend('SetHotkeysPaused', { paused: true });
+    return () => {
+      sendMessageToBackend('SetHotkeysPaused', { paused: false });
+    };
+  }, [isCapturing]);
 
   useEffect(() => {
     if (capturing === null) return;
@@ -148,7 +159,7 @@ export default function HotkeysSection({ settings, updateSettings }: HotkeysSect
     .sort((a, b) => getActionRank(a.hotkey.action) - getActionRank(b.hotkey.action));
 
   return (
-    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
       <h2 className="text-xl font-semibold mb-4">Hotkeys</h2>
       <div className="flex flex-col gap-3">
         {orderedHotkeys.map(({ hotkey, index }) => (

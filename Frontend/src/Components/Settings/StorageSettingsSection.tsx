@@ -312,7 +312,7 @@ export default function StorageSettingsSection({
   const lowlightEnabled = settings.lowlightStorageLimit != null;
 
   return (
-    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
       <h2 className="text-xl font-semibold mb-4">Storage Settings</h2>
       <div className="grid grid-cols-2 gap-4">
         <div className="form-control">
@@ -504,7 +504,7 @@ export default function StorageSettingsSection({
       </div>
 
       {/* Migrate content stored outside the recording path */}
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {outsideCount > 0 && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}

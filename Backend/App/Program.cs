@@ -294,7 +294,7 @@ namespace Segra.Backend.App
                         // fall back to the default so the app can still start.
                         Log.Error(ex, $"Content folder '{Settings.Instance.ContentFolder}' is not accessible, falling back to default");
                         var unreachableFolder = Settings.Instance.ContentFolder;
-                        Settings.Instance.ContentFolder = Shared.PathUtils.Normalize(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Segra"));
+                        Settings.Instance.ContentFolder = Settings.DefaultContentFolder();
                         Directory.CreateDirectory(Settings.Instance.ContentFolder);
                         SettingsService.SaveSettings();
                         _ = Task.Run(() => MessageService.ShowModal(
@@ -565,7 +565,7 @@ namespace Segra.Backend.App
             // the awaits off the tray thread, whose WinForms SynchronizationContext would otherwise deadlock.
             // Skipped when the recorder is known to be dead: there is nothing to finalize and the stop may never return.
             bool recorderLost = RecorderHealthService.IsRecorderLost;
-            if (!recorderLost && (AppState.Instance.Recording != null || AppState.Instance.PreRecording != null))
+            if (!recorderLost && (AppState.Instance.Recording != null || AppState.Instance.PreRecording != null || AppState.Instance.IsFinishingRecording))
             {
                 Log.Information("Active recording detected during shutdown; stopping it before exit.");
                 OBSService.TryStopRecording(TimeSpan.FromSeconds(15));

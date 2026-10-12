@@ -42,12 +42,14 @@ function GameIcon({
   size?: number;
 }) {
   const [errored, setErrored] = useState(false);
+  const { airplaneMode } = useSettings();
   // Prefer the catalog CDN icon; fall back to the exe-extracted base64 icon for custom games.
-  const src = iconId
-    ? `https://segra.tv/api/games/icon/${iconId}`
-    : customIcon
-      ? `data:image/png;base64,${customIcon}`
-      : null;
+  const src =
+    iconId && !airplaneMode
+      ? `https://segra.tv/api/games/icon/${iconId}`
+      : customIcon
+        ? `data:image/png;base64,${customIcon}`
+        : null;
   const showImage = !!src && !errored;
   return (
     <div
@@ -224,6 +226,7 @@ export default function GameDetectionSection() {
       discardSessionsWithoutBookmarksOverride: null,
       enableHdrOverride: null,
       volumeOverride: null,
+      highlightPaddingOverride: null,
     });
     setSearchQuery('');
     setShowDropdown(false);
@@ -246,6 +249,7 @@ export default function GameDetectionSection() {
             discardSessionsWithoutBookmarksOverride: null,
             enableHdrOverride: null,
             volumeOverride: null,
+            highlightPaddingOverride: null,
           })
         }
         onClose={closeModal}
@@ -270,7 +274,7 @@ export default function GameDetectionSection() {
   };
 
   return (
-    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
       <h2 className="text-xl font-semibold mb-2">Game Recording &amp; Overrides</h2>
       <p className="text-sm opacity-70 mb-4">
         Add a game here to force Segra to record it (or stop it from recording), and optionally
@@ -458,6 +462,7 @@ function GamePanel({
 }) {
   const q = game.qualityOverride;
   const mode = game.recordingModeOverride;
+  const padding = game.highlightPaddingOverride;
   const [draggingVolume, setDraggingVolume] = useState<number | null>(null);
 
   // Quality override helpers ------------------------------------------------
@@ -709,8 +714,87 @@ function GamePanel({
           </span>
         </div>
       </OverrideSection>
+
+      {/* Highlight padding override */}
+      <OverrideSection
+        title="Highlight Padding"
+        description="Override how many seconds are kept before and after each highlight moment in this game."
+        enabled={padding != null}
+        onToggle={(enabled) =>
+          onUpdate({
+            highlightPaddingOverride: enabled
+              ? {
+                  before: settings.highlightPaddingBefore,
+                  after: settings.highlightPaddingAfter,
+                }
+              : null,
+          })
+        }
+      >
+        {padding && (
+          <div className="grid grid-cols-2 gap-4">
+            <div className="form-control w-full">
+              <label className="label text-base-content px-0 !block">
+                <span className="label-text">Before Highlight</span>
+              </label>
+              <div className="relative w-full">
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  step={0.5}
+                  defaultValue={padding.before}
+                  onBlur={(e) =>
+                    onUpdate({
+                      highlightPaddingOverride: {
+                        ...padding,
+                        before: clampPadding(e.target.value, padding.before),
+                      },
+                    })
+                  }
+                  className="input input-bordered bg-base-300 w-full pr-12 outline-none focus:border-base-400"
+                />
+                <span className="absolute inset-y-0 right-3 flex items-center text-sm opacity-60 pointer-events-none">
+                  sec
+                </span>
+              </div>
+            </div>
+            <div className="form-control w-full">
+              <label className="label text-base-content px-0 !block">
+                <span className="label-text">After Highlight</span>
+              </label>
+              <div className="relative w-full">
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  step={0.5}
+                  defaultValue={padding.after}
+                  onBlur={(e) =>
+                    onUpdate({
+                      highlightPaddingOverride: {
+                        ...padding,
+                        after: clampPadding(e.target.value, padding.after),
+                      },
+                    })
+                  }
+                  className="input input-bordered bg-base-300 w-full pr-12 outline-none focus:border-base-400"
+                />
+                <span className="absolute inset-y-0 right-3 flex items-center text-sm opacity-60 pointer-events-none">
+                  sec
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </OverrideSection>
     </div>
   );
+}
+
+function clampPadding(raw: string, fallback: number): number {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? Math.min(60, Math.max(1, parsed)) : fallback;
 }
 
 function QualityOverrideEditor({

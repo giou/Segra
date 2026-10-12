@@ -4,6 +4,7 @@ using Segra.Backend.Core;
 using Segra.Backend.Shared;
 using System.Globalization;
 using Segra.Backend.Core.Models;
+using Segra.Backend.Games;
 using Segra.Backend.Windows.Storage;
 
 namespace Segra.Backend.Media
@@ -45,8 +46,7 @@ namespace Segra.Backend.Media
                 Log.Information($"Found {highlightBookmarks.Count} bookmarks to include in highlight");
                 progressCallback?.Invoke(5, $"Found {highlightBookmarks.Count} moments");
 
-                double paddingBefore = Settings.Instance.HighlightPaddingBefore;
-                double paddingAfter = Settings.Instance.HighlightPaddingAfter;
+                var (paddingBefore, paddingAfter) = GameSettingsService.ResolveHighlightPadding(content.GameExePath);
                 var segments = highlightBookmarks.Select(b => new TimeSegment
                 {
                     StartTime = Math.Max(0, b.Time.TotalSeconds - paddingBefore),
@@ -176,6 +176,9 @@ namespace Segra.Backend.Media
                         "-t", segmentDuration.ToString(CultureInfo.InvariantCulture),
                         "-i", inputFilePath,
                         "-map", "0",
+                        // Leave out the embedded chapter track, it breaks the concat
+                        "-map", "-0:d",
+                        "-map_chapters", "-1",
                         "-c", "copy",
                         "-avoid_negative_ts", "make_zero",
                     };

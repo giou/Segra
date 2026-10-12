@@ -16,6 +16,7 @@ using Segra.Backend.Core.Models;
 using Segra.Backend.Windows.Storage;
 #if WINDOWS
 using Segra.Backend.Windows.Input.HotkeyBroker;
+using Segra.Backend.Windows.Codecs;
 #endif
 
 namespace Segra.Backend.App
@@ -46,7 +47,8 @@ namespace Segra.Backend.App
             "ReleaseNotes",
             "pong",
             "RecordingPreviewState",
-            "RecordingPreviewFrame"
+            "RecordingPreviewFrame",
+            "MigrationStatus"
         };
 
         private const int MaxPendingModals = 10;
@@ -111,7 +113,11 @@ namespace Segra.Backend.App
                             root.TryGetProperty("Parameters", out JsonElement loginParameterElement);
                             string accessToken = loginParameterElement.GetProperty("accessToken").GetString()!;
                             string refreshToken = loginParameterElement.GetProperty("refreshToken").GetString()!;
-                            _ = Task.Run(() => AuthService.Login(accessToken, refreshToken));
+                            _ = Task.Run(() =>
+                            {
+                                AuthService.Login(accessToken, refreshToken);
+                                UploadService.CheckStaleUploads();
+                            });
                             break;
                         case "Logout":
                             _ = Task.Run(AuthService.Logout);
@@ -156,6 +162,12 @@ namespace Segra.Backend.App
                         case "InstallHotkeyBroker":
                             _ = Task.Run(HotkeyBrokerSetup.InstallAsync);
                             break;
+                        case "InstallHevcExtension":
+                            _ = Task.Run(HevcExtensionInstaller.InstallAsync);
+                            break;
+                        case "RestartApp":
+                            _ = Task.Run(() => Program.Restart("requested by the user", minimized: false));
+                            break;
 #endif
                         case "DeleteContent":
                             root.TryGetProperty("Parameters", out JsonElement deleteContentParameterElement);
@@ -171,9 +183,9 @@ namespace Segra.Backend.App
                             break;
                         case "CancelUpload":
                             if (root.TryGetProperty("Parameters", out var cancelUploadParams) &&
-                                cancelUploadParams.TryGetProperty("fileName", out var uploadFileName))
+                                cancelUploadParams.TryGetProperty("uploadId", out var uploadIdElement))
                             {
-                                UploadService.CancelUpload(uploadFileName.GetString()!);
+                                UploadService.CancelUpload(uploadIdElement.GetString()!);
                             }
                             break;
                         case "OpenFileLocation":
@@ -256,7 +268,7 @@ namespace Segra.Backend.App
                             _ = Task.Run(() => OBSService.StartRecording(startManually: true));
                             break;
                         case "StopRecording":
-                            _ = Task.Run(() => OBSService.StopRecording());
+                            _ = Task.Run(() => OBSService.StopRecording(userRequested: true));
                             break;
                         case "RefreshStorageStats":
                             StorageService.UpdateRecordingDriveSpaceInState();
@@ -308,6 +320,7 @@ namespace Segra.Backend.App
                             });
 
                             await UpdateService.SendCurrentUpdateProgressToFrontend();
+                            await SendFrontendMessage("MigrationStatus", MigrationService.Status);
                             await FlushPendingModalsAsync();
                             _ = Task.Run(() => UpdateService.GetReleaseNotes());
                             break;
@@ -318,6 +331,19 @@ namespace Segra.Backend.App
                         case "SetCacheLocation":
                             await SetCacheLocationAsync();
                             Log.Information("SetCacheLocation command received.");
+                            break;
+                        case "SetHotkeysPaused":
+                            root.TryGetProperty("Parameters", out JsonElement hotkeysPausedElement);
+                            Segra.Backend.Windows.Input.HotkeyCaptureService.SetPaused(
+                                hotkeysPausedElement.ValueKind == JsonValueKind.Object
+                                && hotkeysPausedElement.TryGetProperty("paused", out JsonElement pausedElement)
+                                && pausedElement.ValueKind == JsonValueKind.True);
+                            break;
+                        case "ResetScreenSelection":
+                            Settings.Instance.PipeWireRestoreToken = null;
+                            SettingsService.SaveSettings();
+                            _ = SendSettingsToFrontend("Screen selection reset");
+                            Log.Information("Cleared the saved screen-share choice; the next display capture asks again");
                             break;
                         case "UpdateSettings":
                             root.TryGetProperty("Parameters", out JsonElement settingsParameterElement);
@@ -452,7 +478,7 @@ namespace Segra.Backend.App
 
                     if (content != null && !string.IsNullOrEmpty(content.FilePath))
                     {
-                        await ContentService.DeleteContent(content.FilePath, content.Type, content.Id, sendToFrontend: false);
+                        await ContentService.DeleteContent(content.FilePath, content.Type, content.Id, reloadState: false);
                         Log.Information($"Deleted content: {content.FileName}");
                     }
                     else

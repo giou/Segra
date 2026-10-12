@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import DropdownSelect from '../DropdownSelect';
+import EncoderVendorIcon, { getEncoderVendor } from '../EncoderVendorIcon';
 import {
   Settings as SettingsType,
   VideoQualityPreset,
   DisplayCaptureMethod,
+  GpuVendor,
 } from '../../Models/types';
 import { sendMessageToBackend } from '../../Utils/MessageUtils';
 import { clampInt } from '../../Utils/NumberUtils';
 import { useAppState } from '../../Context/AppStateContext';
+import HevcExtensionWarning, { isHevcEncoder } from '../HevcExtensionWarning';
 import {
   usePendingRecordingSettings,
   RECORDING_SETTING_GROUPS,
@@ -24,6 +27,13 @@ export default function VideoSettingsSection({
   updateSettings,
 }: VideoSettingsSectionProps) {
   const appState = useAppState();
+  const getSecondaryGpuLabel = (encoderId: string) => {
+    const vendor = getEncoderVendor(encoderId);
+    if (!vendor || appState.gpuVendor === GpuVendor.Unknown || vendor === appState.gpuVendor) {
+      return null;
+    }
+    return appState.integratedGpuVendors?.includes(vendor) ? 'Integrated GPU' : 'Secondary GPU';
+  };
   const hasHdrDisplay = appState.displays.some((d) => d.isHdr);
   const [localReplayBufferDuration, setLocalReplayBufferDuration] = useState<string>(
     String(settings.replayBufferDuration),
@@ -55,7 +65,30 @@ export default function VideoSettingsSection({
     sendMessageToBackend('ApplyVideoPreset', { preset });
   };
 
-  const monitorSelectionField = (
+  const monitorSelectionField = appState.usesScreenSharePicker ? (
+    <div className="form-control w-full">
+      <label className="label text-base-content px-0 !block">
+        <span className="label-text">Screen</span>
+      </label>
+      <div className="input input-bordered bg-base-200 w-full flex items-center justify-between gap-2 pr-1.5">
+        <span className="truncate font-medium">
+          {settings.pipeWireRestoreToken
+            ? 'Picked in screen-share dialog'
+            : 'Asks on next recording'}
+        </span>
+        <button
+          className="btn btn-sm border-base-400 bg-base-300 hover:bg-base-100 font-semibold shrink-0"
+          disabled={!settings.pipeWireRestoreToken}
+          onClick={() => sendMessageToBackend('ResetScreenSelection')}
+        >
+          Change screen
+        </button>
+      </div>
+      <div className="mt-1 px-1 text-xs opacity-70 leading-snug">
+        Used for manual recordings and the always-on replay buffer.
+      </div>
+    </div>
+  ) : (
     <div className="form-control">
       <label className="label">
         <span className="label-text text-base-content">Monitor Selection</span>
@@ -106,7 +139,7 @@ export default function VideoSettingsSection({
   );
 
   return (
-    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-custom">
+    <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
       <div className="flex items-center gap-2 mb-4">
         <h2 className="text-xl font-semibold">Video Settings</h2>
         {hasPendingChanges && (
@@ -159,7 +192,7 @@ export default function VideoSettingsSection({
       </div>
 
       {/* Replay Buffer Settings - Only show when a replay buffer is in use */}
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {(settings.recordingMode === 'Buffer' ||
           settings.recordingMode === 'Hybrid' ||
           settings.alwaysOnReplayBuffer) && (
@@ -253,7 +286,7 @@ export default function VideoSettingsSection({
       </AnimatePresence>
 
       {/* Advanced Settings - Only show when Custom preset is selected */}
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {settings.videoQualityPreset === 'custom' && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
@@ -479,18 +512,36 @@ export default function VideoSettingsSection({
                         : !codec.isHardwareEncoder,
                     )
                     .sort((a, b) => {
-                      const priorityOrder = ['jim_nvenc', 'h264_texture_amf', 'obs_x264'];
-                      const aIndex = priorityOrder.indexOf(a.internalEncoderId);
-                      const bIndex = priorityOrder.indexOf(b.internalEncoderId);
-                      if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
-                      if (aIndex !== -1) return -1;
-                      if (bIndex !== -1) return 1;
-                      return 0;
+                      const priorityOrder = ['nvenc', 'amf', 'qsv', 'obs_x264'];
+                      const rank = (id: string) => {
+                        const index = priorityOrder.findIndex((p) => id.includes(p));
+                        return index === -1 ? priorityOrder.length : index;
+                      };
+                      return rank(a.internalEncoderId) - rank(b.internalEncoderId);
                     })
-                    .map((codec) => ({
-                      value: codec.internalEncoderId,
-                      label: codec.friendlyName,
-                    }))}
+                    .map((codec) => {
+                      const secondaryGpuLabel = getSecondaryGpuLabel(codec.internalEncoderId);
+                      return {
+                        value: codec.internalEncoderId,
+                        label: (
+                          <span className="flex items-center gap-2">
+                            <EncoderVendorIcon
+                              encoderId={codec.internalEncoderId}
+                              isHardware={codec.isHardwareEncoder}
+                            />
+                            {codec.friendlyName}
+                            {secondaryGpuLabel && (
+                              <span
+                                className="text-xs font-normal text-base-content/50"
+                                title="Runs on a different GPU than your main one"
+                              >
+                                {secondaryGpuLabel}
+                              </span>
+                            )}
+                          </span>
+                        ),
+                      };
+                    })}
                   value={
                     appState.codecs.find(
                       (c) => c.internalEncoderId === settings.codec?.internalEncoderId,
@@ -517,6 +568,10 @@ export default function VideoSettingsSection({
           {monitorSelectionField}
           {captureMethodField}
         </div>
+      )}
+
+      {isHevcEncoder(settings.codec?.internalEncoderId) && (
+        <HevcExtensionWarning className="mt-3" />
       )}
 
       <div className="flex flex-col gap-3 mt-3">
@@ -547,11 +602,34 @@ export default function VideoSettingsSection({
             <div>
               <div className="font-semibold">Record in HDR</div>
               <div className="text-sm opacity-70 mt-0.5">
-                Keeps HDR brightness and color. Videos can look washed out on screens without HDR.
+                Keeps HDR brightness and color, but videos can look washed out on screens without
+                HDR. When off, HDR is converted to SDR.
               </div>
             </div>
           </label>
         )}
+
+        {settings.videoQualityPreset === 'custom' &&
+          appState.platform !== 'linux' &&
+          appState.gpuVendor !== GpuVendor.Intel && (
+            <label className="flex items-center gap-3 cursor-pointer p-3 bg-base-200 rounded-lg border border-base-400">
+              <input
+                type="checkbox"
+                checked={settings.gpuPriority === 'Realtime'}
+                onChange={(e) =>
+                  updateSettings({ gpuPriority: e.target.checked ? 'Realtime' : 'High' })
+                }
+                className="checkbox checkbox-primary checkbox-sm"
+              />
+              <div>
+                <div className="font-semibold">Realtime GPU Priority</div>
+                <div className="text-sm opacity-70 mt-0.5">
+                  Keeps recordings smooth in GPU-heavy games. When off, the game gets a few more FPS
+                  but recordings can stutter.
+                </div>
+              </div>
+            </label>
+          )}
       </div>
     </div>
   );
