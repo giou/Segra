@@ -230,7 +230,8 @@ internal static class MigrationService
             new("0016_copy_compress_10mb_to_20mb", Apply_0016_CopyCompress10MbTo20Mb),
             new("0017_per_device_input_options", Apply_0017_PerDeviceInputOptions),
             new("0018_embed_metadata_in_videos", Apply_0018_EmbedMetadataInVideos),
-            new("0019_index_first_in_clips", Apply_0019_IndexFirstInClips)
+            new("0019_index_first_in_clips", Apply_0019_IndexFirstInClips),
+            new("0020_drop_legacy_upload_id", Apply_0020_DropLegacyUploadId)
         ];
     }
 
@@ -239,6 +240,57 @@ internal static class MigrationService
     private static void Apply_0019_IndexFirstInClips()
     {
         ForEachVideo("0019", EmbeddedMetadataService.KeepsIndexFirst, c => EmbeddedMetadataService.EmbedAsync(c).GetAwaiter().GetResult());
+    }
+
+    // Migration 0020: Uploads used to store only the URL slug as UploadId, and the field was
+    // later replaced by the full UploadUrl. The leftover slugs can't be rebuilt into working
+    // links (the video id part is not stored locally) and slug-only URLs 404 on segra.tv,
+    // so drop them. Re-upload a video to restore its link buttons.
+    private static void Apply_0020_DropLegacyUploadId()
+    {
+        var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+        int clearedCount = 0;
+
+        foreach (Content.ContentType type in Enum.GetValues<Content.ContentType>())
+        {
+            string metadataFolder = FolderNames.GetMetadataFolderPath(type);
+            if (!Directory.Exists(metadataFolder)) continue;
+
+            foreach (var metadataFilePath in Directory.EnumerateFiles(metadataFolder, "*.json").ToList())
+            {
+                try
+                {
+                    string json = File.ReadAllText(metadataFilePath);
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
+
+                    bool hasLegacy = doc.RootElement
+                        .EnumerateObject()
+                        .Any(p => string.Equals(p.Name, "UploadId", StringComparison.OrdinalIgnoreCase));
+                    if (!hasLegacy) continue;
+
+                    var rebuilt = new Dictionary<string, JsonElement>();
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (string.Equals(prop.Name, "UploadId", StringComparison.OrdinalIgnoreCase)) continue;
+                        rebuilt[prop.Name] = prop.Value.Clone();
+                    }
+
+                    File.WriteAllText(metadataFilePath, JsonSerializer.Serialize(rebuilt, jsonOptions));
+                    clearedCount++;
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Migration 0020: failed for {File}", metadataFilePath);
+                }
+            }
+        }
+
+        if (clearedCount > 0)
+        {
+            SettingsService.LoadContentFromFolderIntoState(awaitMigrations: false).GetAwaiter().GetResult();
+            Log.Information("Cleared legacy slug-only upload IDs from {Count} metadata files (re-upload to restore links)", clearedCount);
+        }
     }
 
     // Migration 0018: Game, title, bookmarks etc. are now stored in the video file as well, so import
