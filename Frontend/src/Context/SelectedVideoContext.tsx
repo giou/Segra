@@ -1,18 +1,34 @@
-import { createContext, useContext, useState, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { Content } from '../Models/types';
 
 interface SelectedVideoContextProps {
   selectedVideo: Content | null;
   setSelectedVideo: (video: Content | null) => void;
+  lastPlayedVideo: Content | null;
+  clearLastPlayedVideo: () => void;
 }
 
 const SelectedVideoContext = createContext<SelectedVideoContextProps | undefined>(undefined);
 
 export const SelectedVideoProvider = ({ children }: { children: ReactNode }) => {
-  const [selectedVideo, setSelectedVideo] = useState<Content | null>(null);
+  const [selectedVideo, setSelectedVideoState] = useState<Content | null>(null);
+  const [lastPlayedVideo, setLastPlayedVideo] = useState<Content | null>(null);
+
+  const setSelectedVideo = useCallback((video: Content | null) => {
+    if (video) {
+      setLastPlayedVideo(video);
+    }
+    setSelectedVideoState(video);
+  }, []);
+
+  const clearLastPlayedVideo = useCallback(() => {
+    setLastPlayedVideo(null);
+  }, []);
 
   return (
-    <SelectedVideoContext.Provider value={{ selectedVideo, setSelectedVideo }}>
+    <SelectedVideoContext.Provider
+      value={{ selectedVideo, setSelectedVideo, lastPlayedVideo, clearLastPlayedVideo }}
+    >
       {children}
     </SelectedVideoContext.Provider>
   );

@@ -2620,7 +2620,11 @@ export default function VideoComponent({ video }: { video: Content }) {
                   {copyButtons}
                 </>
               )}
-              {(video.type === 'Session' || video.type === 'Buffer') && (
+              {(video.type === 'Session' ||
+                video.type === 'Buffer' ||
+                video.type === 'Clip' ||
+                video.type === 'Highlight' ||
+                video.type === 'Lowlight') && (
                 <>
                   <Button
                     variant="primary"
@@ -2705,7 +2709,11 @@ export default function VideoComponent({ video }: { video: Content }) {
             </div>
           </div>
         </div>
-        {(video.type === 'Session' || video.type === 'Buffer') && (
+        {(video.type === 'Session' ||
+          video.type === 'Buffer' ||
+          video.type === 'Clip' ||
+          video.type === 'Highlight' ||
+          video.type === 'Lowlight') && (
           <div className="flex flex-col h-full pt-4 pl-4 pr-1 border-l bg-base-300 text-neutral-content w-52 2xl:w-70.25 border-base-400">
             <div className="flex-1 p-1 overflow-y-scroll">
               {segments.map((seg, index) => (

@@ -44,7 +44,7 @@ export default function ContentPage({
   progressCardElement,
 }: ContentPageProps) {
   const state = useAppState();
-  const { setSelectedVideo } = useSelectedVideo();
+  const { setSelectedVideo, lastPlayedVideo, clearLastPlayedVideo } = useSelectedVideo();
   const { scrollPositions, setScrollPosition } = useScroll();
   const { isModalOpen, openModal, closeModal } = useModal();
   const confirmDelete = useDeleteConfirmation();
@@ -383,6 +383,44 @@ export default function ContentPage({
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   }, [contentItems]);
+
+  // When exiting the player (including after prev/next navigation), scroll to
+  // the last played video and pulse its border so it can be found again.
+  useEffect(() => {
+    if (!lastPlayedVideo) return;
+    if (lastPlayedVideo.type !== contentType) return;
+
+    const exists = contentItems.some((item) => item.id === lastPlayedVideo.id);
+    if (!exists) {
+      clearLastPlayedVideo();
+      return;
+    }
+
+    const isVisible = filteredItems.some((item) => item.id === lastPlayedVideo.id);
+    if (!isVisible) {
+      // Game filter hides it; reset so it can be scrolled to. The effect
+      // re-runs when filteredItems updates and scrolls then.
+      setSelectedGame(ALL_GAMES);
+      return;
+    }
+
+    // Pulse the card border twice to draw the eye to it (0.7s delay + 2x0.9s = 2.5s).
+    setHighlightedContentId(lastPlayedVideo.id);
+    if (highlightTimeoutRef.current) clearTimeout(highlightTimeoutRef.current);
+    highlightTimeoutRef.current = setTimeout(() => setHighlightedContentId(null), 2600);
+
+    clearLastPlayedVideo();
+
+    // Runs after the mount scroll-restoration, so this wins and the list
+    // lands on the last played video instead of the old scroll position.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        containerRef.current
+          ?.querySelector(`[data-content-id="${escapeAttrValue(lastPlayedVideo.id)}"]`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    });
+  }, [lastPlayedVideo, contentType, contentItems, filteredItems, clearLastPlayedVideo]);
 
   useEffect(() => {
     return () => {
