@@ -231,8 +231,35 @@ internal static class MigrationService
             new("0017_per_device_input_options", Apply_0017_PerDeviceInputOptions),
             new("0018_embed_metadata_in_videos", Apply_0018_EmbedMetadataInVideos),
             new("0019_index_first_in_clips", Apply_0019_IndexFirstInClips),
-            new("0020_drop_legacy_upload_id", Apply_0020_DropLegacyUploadId)
+            new("0020_remove_legacy_nvenc_presets", Apply_0020_RemoveLegacyNvencPresets),
+            new("0021_drop_legacy_upload_id", Apply_0021_DropLegacyUploadId)
         ];
+    }
+
+    // Migration 0020: FFmpeg removed the legacy NVENC presets (hp, hq, ll, ...), so clips with them fail to encode.
+    private static void Apply_0020_RemoveLegacyNvencPresets()
+    {
+        try
+        {
+            var settings = Settings.Instance;
+            string? replacement = settings.ClipPreset switch
+            {
+                "hq" or "bd" or "llhq" => "slow",
+                "hp" or "ll" or "llhp" or "losslesshp" => "fast",
+                "lossless" => "medium",
+                _ => null
+            };
+            if (replacement == null) return;
+
+            Log.Information($"ClipPreset changed from '{settings.ClipPreset}' to '{replacement}' (legacy NVENC preset)");
+            settings.ClipPreset = replacement;
+            SettingsService.SaveSettings();
+            _ = MessageService.SendSettingsToFrontend("Migrated legacy NVENC clip preset");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to migrate legacy NVENC clip preset");
+        }
     }
 
     // Migration 0019: 0018 moved the index of faststart videos (clips, highlights, compressed videos)
@@ -242,11 +269,11 @@ internal static class MigrationService
         ForEachVideo("0019", EmbeddedMetadataService.KeepsIndexFirst, c => EmbeddedMetadataService.EmbedAsync(c).GetAwaiter().GetResult());
     }
 
-    // Migration 0020: Uploads used to store only the URL slug as UploadId, and the field was
+    // Migration 0021: Uploads used to store only the URL slug as UploadId, and the field was
     // later replaced by the full UploadUrl. The leftover slugs can't be rebuilt into working
     // links (the video id part is not stored locally) and slug-only URLs 404 on segra.tv,
     // so drop them. Re-upload a video to restore its link buttons.
-    private static void Apply_0020_DropLegacyUploadId()
+    private static void Apply_0021_DropLegacyUploadId()
     {
         var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
         int clearedCount = 0;
@@ -281,7 +308,7 @@ internal static class MigrationService
                 }
                 catch (Exception ex)
                 {
-                    Log.Error(ex, "Migration 0020: failed for {File}", metadataFilePath);
+                    Log.Error(ex, "Migration 0021: failed for {File}", metadataFilePath);
                 }
             }
         }

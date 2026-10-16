@@ -1263,6 +1263,9 @@ namespace Segra.Backend.Core.Models
         [JsonPropertyName("startSettings")]
         public JsonObject? StartSettings { get; set; }
 
+        // Lets saved replays pick up bookmarks that integrations add after the save
+        public event Action<Bookmark>? BookmarkAdded;
+
         public void AddBookmark(Bookmark bookmark)
         {
             lock (_bookmarksLock)
@@ -1270,6 +1273,15 @@ namespace Segra.Backend.Core.Models
                 Bookmarks.Add(bookmark);
             }
             AppState.Instance.NotifyRecordingUpdated();
+            BookmarkAdded?.Invoke(bookmark);
+        }
+
+        public List<Bookmark> GetBookmarks()
+        {
+            lock (_bookmarksLock)
+            {
+                return [.. Bookmarks];
+            }
         }
 
         [JsonPropertyName("duration")]
@@ -1437,7 +1449,7 @@ namespace Segra.Backend.Core.Models
         }
     }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<RecordingMode>))]
     public enum RecordingMode
     {
         Session,
@@ -1445,28 +1457,28 @@ namespace Segra.Backend.Core.Models
         Hybrid
     }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<GpuPriority>))]
     public enum GpuPriority
     {
         High,
         Realtime
     }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<StartupWindowMode>))]
     public enum StartupWindowMode
     {
         Normal,
         Minimized
     }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<CloseButtonAction>))]
     public enum CloseButtonAction
     {
         Minimize,
         Exit
     }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<DisplayCaptureMethod>))]
     public enum DisplayCaptureMethod
     {
         Auto,
@@ -1475,7 +1487,7 @@ namespace Segra.Backend.Core.Models
         GameCaptureOnly
     }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<AudioOutputMode>))]
     public enum AudioOutputMode
     {
         All,

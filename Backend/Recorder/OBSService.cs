@@ -262,6 +262,8 @@ namespace Segra.Backend.Recorder
                 }
 
                 Log.Information("Attempting to save replay buffer...");
+                // The saved replay ends at this moment
+                DateTime requestedAt = DateTime.Now;
                 try
                 {
                     _bufferOutput.Save();
@@ -299,6 +301,9 @@ namespace Segra.Backend.Recorder
                 // Reload content list to include the new buffer file
                 await SettingsService.LoadContentFromFolderIntoState(true);
 
+                if (bufferId != null && recording != null)
+                    await AddReplayBookmarks(recording, bufferId, requestedAt);
+
                 Log.Information("Replay buffer save process completed successfully");
 
                 // Restart replay buffer so subsequent saves only include new footage, unless a
@@ -313,6 +318,36 @@ namespace Segra.Backend.Recorder
                 lock (_replaySaveLock)
                     _activeReplaySave = null;
                 _replaySaveSemaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Copies the recording's bookmarks that fall inside a saved replay into it, including
+        /// ones integrations add later (e.g. Rainbow Six Siege after the round ends).
+        /// </summary>
+        private static async Task AddReplayBookmarks(Recording recording, string contentId, DateTime endedAt)
+        {
+            try
+            {
+                var content = AppState.Instance.Content.FirstOrDefault(c => c.Id == contentId);
+                if (content == null)
+                    return;
+
+                TimeSpan duration = content.Duration;
+                DateTime startedAt = endedAt - duration;
+
+                List<Bookmark> InReplay(IEnumerable<Bookmark> bookmarks) => bookmarks
+                    .Select(b => new Bookmark { Id = b.Id, Type = b.Type, Subtype = b.Subtype, Time = recording.StartTime + b.Time - startedAt })
+                    .Where(b => b.Time >= TimeSpan.Zero && b.Time <= duration)
+                    .ToList();
+
+                // Subscribe before taking the snapshot so none fall in between; duplicates are skipped by id
+                recording.BookmarkAdded += b => _ = Task.Run(() => ContentService.AddBookmarks(contentId, InReplay([b])));
+                await ContentService.AddBookmarks(contentId, InReplay(recording.GetBookmarks()));
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to copy bookmarks into the saved replay");
             }
         }
 
@@ -1840,10 +1875,7 @@ namespace Segra.Backend.Recorder
             Log.Information("Recording started: " + videoOutputPath);
             GeneralUtils.SetProcessPriority(ProcessPriorityClass.High);
             SetRecordingGpuPriority(true);
-            if (!isReplayBufferMode)
-            {
-                _ = GameIntegrationService.Start(GameUtils.GetIgdbIdFromExePath(exePath), GameUtils.GetGameNameFromExePath(exePath), exePath);
-            }
+            _ = GameIntegrationService.Start(GameUtils.GetIgdbIdFromExePath(exePath), GameUtils.GetGameNameFromExePath(exePath), exePath);
             return true;
         }
 
@@ -2182,14 +2214,9 @@ namespace Segra.Backend.Recorder
         {
             if (userRequested)
             {
-                // Game recordings only; a stopped display capture shouldn't hold back the next game
-                // Capture once: teardown can null these on another thread
-                var preRecording = AppState.Instance.PreRecording;
-                var recording = AppState.Instance.Recording;
-                if (preRecording != null)
-                    GameDetectionService.OnUserStop(preRecording.Exe, preRecording.Game);
-                else if (recording?.Pid != null)
-                    GameDetectionService.OnUserStop(recording.ExePath, recording.Game);
+                // Game recordings only; the still-focused game shouldn't restart until the foreground window changes
+                if (AppState.Instance.PreRecording != null || AppState.Instance.Recording?.Pid != null)
+                    GameDetectionService.PreventRetryRecording = true;
                 CancelPendingStart();
             }
 
@@ -3081,6 +3108,7 @@ namespace Segra.Backend.Recorder
                 try
                 {
                     _gameCaptureItem.Remove();
+                    _gameCaptureItem.Dispose();
                 }
                 catch (Exception ex)
                 {
