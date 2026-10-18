@@ -227,6 +227,7 @@ export default function GameDetectionSection() {
       enableHdrOverride: null,
       volumeOverride: null,
       highlightPaddingOverride: null,
+      lowlightPaddingOverride: null,
     });
     setSearchQuery('');
     setShowDropdown(false);
@@ -250,6 +251,7 @@ export default function GameDetectionSection() {
             enableHdrOverride: null,
             volumeOverride: null,
             highlightPaddingOverride: null,
+            lowlightPaddingOverride: null,
           })
         }
         onClose={closeModal}
@@ -463,6 +465,7 @@ function GamePanel({
   const q = game.qualityOverride;
   const mode = game.recordingModeOverride;
   const padding = game.highlightPaddingOverride;
+  const lowlightPadding = game.lowlightPaddingOverride;
   const [draggingVolume, setDraggingVolume] = useState<number | null>(null);
 
   // Quality override helpers ------------------------------------------------
@@ -775,6 +778,80 @@ function GamePanel({
                       highlightPaddingOverride: {
                         ...padding,
                         after: clampPadding(e.target.value, padding.after),
+                      },
+                    })
+                  }
+                  className="input input-bordered bg-base-300 w-full pr-12 outline-none focus:border-base-400"
+                />
+                <span className="absolute inset-y-0 right-3 flex items-center text-sm opacity-60 pointer-events-none">
+                  sec
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </OverrideSection>
+
+      {/* Lowlight padding override */}
+      <OverrideSection
+        title="Lowlight Padding"
+        description="Override how many seconds are kept before and after each lowlight moment in this game."
+        enabled={lowlightPadding != null}
+        onToggle={(enabled) =>
+          onUpdate({
+            lowlightPaddingOverride: enabled
+              ? {
+                  before: settings.lowlightPaddingBefore,
+                  after: settings.lowlightPaddingAfter,
+                }
+              : null,
+          })
+        }
+      >
+        {lowlightPadding && (
+          <div className="grid grid-cols-2 gap-4">
+            <div className="form-control w-full">
+              <label className="label text-base-content px-0 !block">
+                <span className="label-text">Before Lowlight</span>
+              </label>
+              <div className="relative w-full">
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  step={0.5}
+                  defaultValue={lowlightPadding.before}
+                  onBlur={(e) =>
+                    onUpdate({
+                      lowlightPaddingOverride: {
+                        ...lowlightPadding,
+                        before: clampPadding(e.target.value, lowlightPadding.before),
+                      },
+                    })
+                  }
+                  className="input input-bordered bg-base-300 w-full pr-12 outline-none focus:border-base-400"
+                />
+                <span className="absolute inset-y-0 right-3 flex items-center text-sm opacity-60 pointer-events-none">
+                  sec
+                </span>
+              </div>
+            </div>
+            <div className="form-control w-full">
+              <label className="label text-base-content px-0 !block">
+                <span className="label-text">After Lowlight</span>
+              </label>
+              <div className="relative w-full">
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  step={0.5}
+                  defaultValue={lowlightPadding.after}
+                  onBlur={(e) =>
+                    onUpdate({
+                      lowlightPaddingOverride: {
+                        ...lowlightPadding,
+                        after: clampPadding(e.target.value, lowlightPadding.after),
                       },
                     })
                   }

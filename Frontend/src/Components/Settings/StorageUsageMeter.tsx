@@ -22,6 +22,11 @@ const TYPE_LABELS: Record<ContentType, string> = {
 
 const TYPE_ORDER: ContentType[] = ['Session', 'Buffer', 'Clip', 'Highlight', 'Lowlight'];
 
+// The storage limit only measures Sessions and Replay Buffers; Clips, Highlights and
+// Lowlights are exempt and use their own separate per-type limits.
+const COUNTED_TYPES: ContentType[] = ['Session', 'Buffer'];
+const EXEMPT_TYPES: ContentType[] = ['Clip', 'Highlight', 'Lowlight'];
+
 const normalizePath = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '');
 
 const formatGb = (value: number) => {
@@ -60,7 +65,7 @@ export default function StorageUsageMeter({
   driveUsedGb,
   driveFreeGb,
 }: StorageUsageMeterProps) {
-  const segments = useMemo<Segment[]>(() => {
+  const byType = useMemo<Segment[]>(() => {
     // Imported content can live outside the recording path and isn't counted against
     // the limit, so the breakdown has to match what the limit actually measures.
     const root = normalizePath(contentFolder.trim()).toLowerCase();
@@ -72,7 +77,7 @@ export default function StorageUsageMeter({
         )
       : [];
 
-    const byType = TYPE_ORDER.map((type) => ({
+    return TYPE_ORDER.map((type) => ({
       key: type,
       label: TYPE_LABELS[type],
       color: TYPE_COLORS[type],
@@ -80,15 +85,24 @@ export default function StorageUsageMeter({
         inside.filter((c) => c.type === type).reduce((sum, c) => sum + (c.fileSizeKb || 0), 0) /
         (1024 * 1024),
     }));
+  }, [content, contentFolder]);
+
+  const segments = useMemo<Segment[]>(() => {
+    const counted = byType.filter((s) => COUNTED_TYPES.includes(s.key as ContentType));
 
     // Whatever the folder holds beyond tracked content: orphaned files, stray videos.
-    const tracked = byType.reduce((sum, s) => sum + s.gb, 0);
+    const tracked = counted.reduce((sum, s) => sum + s.gb, 0);
     const other = Math.max(0, usedGb - tracked);
 
-    return [...byType, { key: 'Other', label: 'Other', color: OTHER_COLOR, gb: other }].filter(
+    return [...counted, { key: 'Other', label: 'Other', color: OTHER_COLOR, gb: other }].filter(
       (s) => s.gb >= 0.01,
     );
-  }, [content, contentFolder, usedGb]);
+  }, [byType, usedGb]);
+
+  const exemptSegments = useMemo(
+    () => byType.filter((s) => EXEMPT_TYPES.includes(s.key as ContentType) && s.gb >= 0.01),
+    [byType],
+  );
 
   const isOverLimit = storageLimitGb > 0 && usedGb > storageLimitGb;
   const usedPercent = storageLimitGb > 0 ? (usedGb / storageLimitGb) * 100 : 0;
@@ -154,6 +168,24 @@ export default function StorageUsageMeter({
           </span>
         )}
       </div>
+
+      {exemptSegments.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+          <span className="text-xs tracking-wide text-base-content/40 uppercase">
+            Not counted towards limit
+          </span>
+          {exemptSegments.map((s) => (
+            <span key={s.key} className="flex items-center gap-2">
+              <span
+                className="size-2.5 shrink-0 rounded-[2px] opacity-60"
+                style={{ backgroundColor: s.color }}
+              />
+              <span className="text-base-content/60">{s.label}</span>
+              <span className="tabular-nums text-base-content/40">{formatGb(s.gb)} GB</span>
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-base-400/50 pt-3 text-xs tabular-nums text-base-content/50">
         <span>

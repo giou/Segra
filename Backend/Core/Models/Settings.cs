@@ -61,6 +61,7 @@ namespace Segra.Backend.Core.Models
         private string? _pipeWireRestoreToken = null; // lets the Wayland screen-share portal skip its picker
         private bool _pendingOBSUpdate = false;
         private int _storageLimit = 100;
+        private int? _clipStorageLimit = null;
         private int? _highlightStorageLimit = null;
         private int? _lowlightStorageLimit = null;
         private List<DeviceSetting> _inputDevices = new List<DeviceSetting>();
@@ -358,6 +359,16 @@ namespace Segra.Backend.Core.Models
             set
             {
                 _storageLimit = value;
+            }
+        }
+
+        [JsonPropertyName("clipStorageLimit")]
+        public int? ClipStorageLimit
+        {
+            get => _clipStorageLimit;
+            set
+            {
+                _clipStorageLimit = value;
             }
         }
 
@@ -1576,9 +1587,21 @@ namespace Segra.Backend.Core.Models
 
         [JsonPropertyName("highlightPaddingOverride")]
         public GameHighlightPaddingOverride? HighlightPaddingOverride { get; set; }
+
+        [JsonPropertyName("lowlightPaddingOverride")]
+        public GameLowlightPaddingOverride? LowlightPaddingOverride { get; set; }
     }
 
     public class GameHighlightPaddingOverride
+    {
+        [JsonPropertyName("before")]
+        public double Before { get; set; } = 4;
+
+        [JsonPropertyName("after")]
+        public double After { get; set; } = 4;
+    }
+
+    public class GameLowlightPaddingOverride
     {
         [JsonPropertyName("before")]
         public double Before { get; set; } = 4;

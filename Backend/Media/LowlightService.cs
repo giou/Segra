@@ -2,6 +2,7 @@ using System.Globalization;
 using Segra.Backend.App;
 using Segra.Backend.Core.Models;
 using Segra.Backend.Core;
+using Segra.Backend.Games;
 using Segra.Backend.Shared;
 using Segra.Backend.Windows.Storage;
 using Serilog;
@@ -46,8 +47,7 @@ namespace Segra.Backend.Media
                 Log.Information($"Found {lowlightBookmarks.Count} bookmarks to include in lowlight");
                 progressCallback?.Invoke(5, $"Found {lowlightBookmarks.Count} moments");
 
-                double paddingBefore = Settings.Instance.LowlightPaddingBefore;
-                double paddingAfter = Settings.Instance.LowlightPaddingAfter;
+                var (paddingBefore, paddingAfter) = GameSettingsService.ResolveLowlightPadding(content.GameExePath);
                 var segments = lowlightBookmarks.Select(b => new TimeSegment
                 {
                     StartTime = Math.Max(0, b.Time.TotalSeconds - paddingBefore),
@@ -180,6 +180,9 @@ namespace Segra.Backend.Media
                         "-t", segmentDuration.ToString(CultureInfo.InvariantCulture),
                         "-i", inputFilePath,
                         "-map", "0",
+                        // Leave out the embedded chapter track, it breaks the concat
+                        "-map", "-0:d",
+                        "-map_chapters", "-1",
                         "-c", "copy",
                         "-avoid_negative_ts", "make_zero",
                     };
@@ -261,7 +264,7 @@ namespace Segra.Backend.Media
                 Log.Error(ffEx, "Error extracting and concatenating segments");
                 _ = MessageService.ShowModal(
                     "Lowlight creation failed",
-                    FFmpegErrors.DescribeForUser(ffEx.ExitCode),
+                    FFmpegErrors.DescribeForUser(ffEx),
                     "error");
                 return false;
             }

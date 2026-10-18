@@ -221,6 +221,7 @@ namespace Segra.Backend.Core
             var settings = Settings.Instance;
             bool hasChanges = false;
             bool storageLimitChanged = false;
+            bool clipLimitChanged = false;
             bool highlightLimitChanged = false;
             bool lowlightLimitChanged = false;
 
@@ -686,6 +687,16 @@ namespace Segra.Backend.Core
                 storageLimitChanged = true;
             }
 
+            if (settings.ClipStorageLimit != updatedSettings.ClipStorageLimit)
+            {
+                string oldVal = settings.ClipStorageLimit.HasValue ? $"{settings.ClipStorageLimit.Value} GB" : "Unlimited";
+                string newVal = updatedSettings.ClipStorageLimit.HasValue ? $"{updatedSettings.ClipStorageLimit.Value} GB" : "Unlimited";
+                Log.Information($"ClipStorageLimit changed from '{oldVal}' to '{newVal}'");
+                settings.ClipStorageLimit = updatedSettings.ClipStorageLimit;
+                hasChanges = true;
+                clipLimitChanged = true;
+            }
+
             if (settings.HighlightStorageLimit != updatedSettings.HighlightStorageLimit)
             {
                 string oldVal = settings.HighlightStorageLimit.HasValue ? $"{settings.HighlightStorageLimit.Value} GB" : "Unlimited";
@@ -916,7 +927,7 @@ namespace Segra.Backend.Core
             {
                 Log.Information("Settings updated, saving changes");
                 settings.EndBulkUpdateAndSaveSettings();
-                if (storageLimitChanged || highlightLimitChanged || lowlightLimitChanged)
+                if (storageLimitChanged || clipLimitChanged || highlightLimitChanged || lowlightLimitChanged)
                 {
                     _ = Task.Run(async () =>
                     {

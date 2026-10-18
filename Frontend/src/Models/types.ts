@@ -214,11 +214,17 @@ export interface GameSetting {
   enableHdrOverride: boolean | null;
   volumeOverride: number | null; // Multiplier on top of the configured device volume (0-2)
   highlightPaddingOverride: GameHighlightPaddingOverride | null;
+  lowlightPaddingOverride: GameLowlightPaddingOverride | null;
 }
 
 export interface GameHighlightPaddingOverride {
   before: number; // Seconds before a highlight moment
   after: number; // Seconds after a highlight moment
+}
+
+export interface GameLowlightPaddingOverride {
+  before: number; // Seconds before a lowlight moment
+  after: number; // Seconds after a lowlight moment
 }
 
 export interface GameIntegrationSettings {
@@ -316,6 +322,7 @@ export interface Settings {
   encoder: 'gpu' | 'cpu';
   codec: Codec | null;
   storageLimit: number;
+  clipStorageLimit: number | null;
   highlightStorageLimit: number | null;
   lowlightStorageLimit: number | null;
   contentFolder: string;
@@ -416,6 +423,7 @@ export const initialSettings: Settings = {
   encoder: 'gpu',
   codec: null,
   storageLimit: 100,
+  clipStorageLimit: null,
   highlightStorageLimit: null,
   lowlightStorageLimit: null,
   contentFolder: '',

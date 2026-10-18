@@ -106,7 +106,7 @@ namespace Segra.Backend.Windows.Storage
                     return true;
                 }
 
-                long newFolderSizeBytes = StorageService.CalculateFolderSize(newContentFolder);
+                long newFolderSizeBytes = StorageService.CalculateStorageLimitUsageBytes(newContentFolder);
                 double newFolderSizeGb = (double)newFolderSizeBytes / StorageService.BYTES_PER_GB;
                 int storageLimitGb = Settings.Instance.StorageLimit;
 
@@ -120,7 +120,7 @@ namespace Segra.Backend.Windows.Storage
                     {
                         warningId,
                         title = "Storage Limit Warning",
-                        description = $"The selected folder contains {newFolderSizeGb:F2} GB of content, which exceeds your storage limit of {storageLimitGb} GB.\n\n" +
+                        description = $"The selected folder contains {newFolderSizeGb:F2} GB of sessions and replay buffers, which exceeds your storage limit of {storageLimitGb} GB.\n\n" +
                                      $"Older recordings may be automatically deleted to stay within the limit.\n\n" +
                                      $"Do you want to use this folder anyway?",
                         confirmText = "Use Folder",
@@ -179,7 +179,7 @@ namespace Segra.Backend.Windows.Storage
                         warningId,
                         title = "Storage Limit Warning",
                         description = $"Importing these files ({totalImportSizeGb:F2} GB) will exceed your storage limit.\n\n" +
-                                     $"Current folder size: {currentFolderSizeGb:F2} GB\n" +
+                                     $"Current storage usage: {currentFolderSizeGb:F2} GB\n" +
                                      $"Files to import: {totalImportSizeGb:F2} GB\n" +
                                      $"Projected total: {projectedSizeGb:F2} GB\n" +
                                      $"Storage limit: {storageLimitGb} GB\n\n" +

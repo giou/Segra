@@ -10,6 +10,17 @@ namespace Segra.Backend.Windows.Storage
     {
         public const long BYTES_PER_GB = 1024L * 1024 * 1024;
 
+        // Content that does not count towards the main storage limit: Clips, Highlights and
+        // Lowlights are managed by their own optional per-type limits instead.
+        private static readonly string[] StorageLimitExemptFolders =
+        {
+            FolderNames.Clips,
+            FolderNames.Highlights,
+            FolderNames.Lowlights,
+            FolderNames.LegacyClips,
+            FolderNames.LegacyHighlights
+        };
+
         public static string SanitizeGameNameForFolder(string gameName)
         {
             if (string.IsNullOrWhiteSpace(gameName))
@@ -36,7 +47,7 @@ namespace Segra.Backend.Windows.Storage
                 return 0;
             }
 
-            long currentUsageBytes = CalculateFolderSize(contentFolder);
+            long currentUsageBytes = CalculateStorageLimitUsageBytes(contentFolder);
             double currentUsageGb = Math.Round((double)currentUsageBytes / BYTES_PER_GB, 2);
             return currentUsageGb;
         }
@@ -188,7 +199,7 @@ namespace Segra.Backend.Windows.Storage
                 return;
             }
 
-            long currentUsageBytes = CalculateFolderSize(contentFolder);
+            long currentUsageBytes = CalculateStorageLimitUsageBytes(contentFolder);
             double currentUsageGB = (double)currentUsageBytes / BYTES_PER_GB;
 
             Log.Information($"Current storage usage: {currentUsageGB:F2} GB, limit: {storageLimit} GB");
@@ -205,6 +216,7 @@ namespace Segra.Backend.Windows.Storage
             }
 
             // Optional per-type limits — only enforced when the user has set a value (null = no limit).
+            await EnsureOptionalFolderBelowLimit(FolderNames.Clips, Settings.Instance.ClipStorageLimit, Content.ContentType.Clip);
             await EnsureOptionalFolderBelowLimit(FolderNames.Highlights, Settings.Instance.HighlightStorageLimit, Content.ContentType.Highlight);
             await EnsureOptionalFolderBelowLimit(FolderNames.Lowlights, Settings.Instance.LowlightStorageLimit, Content.ContentType.Lowlight);
         }
@@ -241,13 +253,26 @@ namespace Segra.Backend.Windows.Storage
         }
 
 
-        internal static long CalculateFolderSize(string folderPath)
+        // Calculates the size of a content folder as measured against the main storage limit.
+        // Clips, Highlights and Lowlights are exempt from the limit, so their folders are skipped.
+        internal static long CalculateStorageLimitUsageBytes(string contentFolder)
+        {
+            if (string.IsNullOrEmpty(contentFolder) || !Directory.Exists(contentFolder))
+                return 0;
+
+            return CalculateFolderSize(contentFolder, excludedFolderNames: StorageLimitExemptFolders);
+        }
+
+        internal static long CalculateFolderSize(string folderPath, IReadOnlyCollection<string>? excludedFolderNames = null)
         {
             long size = 0;
             string[] files = Directory.GetFiles(folderPath, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 });
 
             foreach (string file in files)
             {
+                if (IsInExcludedFolder(folderPath, file, excludedFolderNames))
+                    continue;
+
                 FileInfo fileInfo = new FileInfo(file);
                 try
                 {
@@ -260,6 +285,26 @@ namespace Segra.Backend.Windows.Storage
             }
 
             return size;
+        }
+
+        // Matches excluded folder names against the file's path segments relative to the root,
+        // so files or folders that merely contain an excluded name are not skipped.
+        private static bool IsInExcludedFolder(string rootFolder, string filePath, IReadOnlyCollection<string>? excludedFolderNames)
+        {
+            if (excludedFolderNames == null || excludedFolderNames.Count == 0)
+                return false;
+
+            string[] segments = Path.GetRelativePath(rootFolder, filePath)
+                .Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+
+            // The last segment is the file name itself.
+            for (int i = 0; i < segments.Length - 1; i++)
+            {
+                if (excludedFolderNames.Contains(segments[i], StringComparer.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         private static async Task DeleteOldestContent(string contentFolder, long spaceToFreeBytes)

@@ -39,6 +39,9 @@ export default function StorageSettingsSection({
   const appState = useAppState();
   const { isMigrating } = useContentMigration();
   const [localStorageLimit, setLocalStorageLimit] = useState<string>(String(settings.storageLimit));
+  const [localClipLimit, setLocalClipLimit] = useState<string>(
+    settings.clipStorageLimit != null ? String(settings.clipStorageLimit) : '10',
+  );
   const [localHighlightLimit, setLocalHighlightLimit] = useState<string>(
     settings.highlightStorageLimit != null ? String(settings.highlightStorageLimit) : '20',
   );
@@ -52,6 +55,10 @@ export default function StorageSettingsSection({
   useEffect(() => {
     setLocalStorageLimit(String(settings.storageLimit));
   }, [settings.storageLimit]);
+
+  useEffect(() => {
+    setLocalClipLimit(settings.clipStorageLimit != null ? String(settings.clipStorageLimit) : '10');
+  }, [settings.clipStorageLimit]);
 
   const [localContentFolder, setLocalContentFolder] = useState(settings.contentFolder);
   const [localCacheFolder, setLocalCacheFolder] = useState(settings.cacheFolder);
@@ -106,6 +113,15 @@ export default function StorageSettingsSection({
         Boolean,
       ),
     [outsideContent],
+  );
+
+  const clipUsageGb = useMemo(
+    () =>
+      appState.content
+        .filter((c) => c.type === 'Clip')
+        .reduce((sum, c) => sum + (c.fileSizeKb || 0), 0) /
+      (1024 * 1024),
+    [appState.content],
   );
 
   const highlightUsageGb = useMemo(
@@ -168,7 +184,7 @@ export default function StorageSettingsSection({
       openModal(
         <ConfirmationModal
           title="Storage Limit Warning"
-          description={`The storage limit you entered (${numericLimit} GB) is lower than your current folder size (${currentFolderSizeGb.toFixed(2)} GB).\n\nThis will cause older recordings to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
+          description={`The storage limit you entered (${numericLimit} GB) is lower than your current storage usage (${currentFolderSizeGb.toFixed(2)} GB).\n\nThis will cause older recordings to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
           confirmText="Apply Limit"
           cancelText="Cancel"
           onConfirm={() => {
@@ -308,6 +324,63 @@ export default function StorageSettingsSection({
     }
   };
 
+  const handleClipToggle = (enabled: boolean) => {
+    if (enabled) {
+      const numeric = Number(localClipLimit) || 10;
+      const clamped = Math.max(1, Math.min(1000, numeric));
+      setLocalClipLimit(String(clamped));
+      if (clamped < clipUsageGb) {
+        openModal(
+          <ConfirmationModal
+            title="Clip Storage Limit Warning"
+            description={`The clip limit you entered (${clamped} GB) is lower than your current clips size (${clipUsageGb.toFixed(2)} GB).\n\nThis will cause older clips to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
+            confirmText="Apply Limit"
+            cancelText="Cancel"
+            onConfirm={() => {
+              updateSettings({ clipStorageLimit: clamped });
+              closeModal();
+            }}
+            onCancel={closeModal}
+          />,
+        );
+      } else {
+        updateSettings({ clipStorageLimit: clamped });
+      }
+    } else {
+      updateSettings({ clipStorageLimit: null });
+    }
+  };
+
+  const handleClipLimitBlur = () => {
+    if (settings.clipStorageLimit == null) return;
+    const numeric = Number(localClipLimit) || 10;
+    const clamped = Math.max(1, Math.min(1000, numeric));
+    setLocalClipLimit(String(clamped));
+    if (clamped < clipUsageGb) {
+      openModal(
+        <ConfirmationModal
+          title="Clip Storage Limit Warning"
+          description={`The clip limit you entered (${clamped} GB) is lower than your current clips size (${clipUsageGb.toFixed(2)} GB).\n\nThis will cause older clips to be automatically deleted to free up space.\n\nAre you sure you want to continue?`}
+          confirmText="Apply Limit"
+          cancelText="Cancel"
+          onConfirm={() => {
+            updateSettings({ clipStorageLimit: clamped });
+            closeModal();
+          }}
+          onCancel={() => {
+            setLocalClipLimit(
+              settings.clipStorageLimit != null ? String(settings.clipStorageLimit) : '10',
+            );
+            closeModal();
+          }}
+        />,
+      );
+    } else if (clamped !== settings.clipStorageLimit) {
+      updateSettings({ clipStorageLimit: clamped });
+    }
+  };
+
+  const clipEnabled = settings.clipStorageLimit != null;
   const highlightEnabled = settings.highlightStorageLimit != null;
   const lowlightEnabled = settings.lowlightStorageLimit != null;
 
@@ -454,6 +527,35 @@ export default function StorageSettingsSection({
             {lowlightEnabled
               ? `Lowlights auto-delete when exceeded. Currently ${lowlightUsageGb.toFixed(2)} GB.`
               : 'Lowlights are never auto-deleted. Edit the value then enable to set a cap.'}
+          </span>
+        </div>
+
+        <div className="form-control col-span-2 sm:col-span-1">
+          <label className="label pb-1 flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm checkbox-primary"
+              checked={clipEnabled}
+              onChange={(e) => handleClipToggle(e.target.checked)}
+            />
+            <span className="label-text text-base-content">Clip Storage Limit (GB)</span>
+            {!clipEnabled && <span className="text-xs text-base-content/50">— Unlimited</span>}
+          </label>
+          <input
+            type="number"
+            name="clipStorageLimit"
+            value={localClipLimit}
+            onChange={(e) => setLocalClipLimit(e.target.value)}
+            onBlur={handleClipLimitBlur}
+            placeholder="Unlimited"
+            min="1"
+            max="1000"
+            className={`input input-bordered bg-base-200 w-full block outline-none focus:border-base-400 ${!clipEnabled ? 'opacity-60' : ''}`}
+          />
+          <span className="text-xs text-base-content/60 mt-1">
+            {clipEnabled
+              ? `Clips auto-delete when exceeded. Currently ${clipUsageGb.toFixed(2)} GB.`
+              : 'Clips are never auto-deleted. Edit the value then enable to set a cap.'}
           </span>
         </div>
       </div>

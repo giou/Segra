@@ -11,6 +11,7 @@ import {
   Home,
   LucideIcon,
   Play,
+  Skull,
   Settings as SettingsIcon,
 } from 'lucide-react';
 import {
@@ -34,7 +35,7 @@ const MENU_ICONS: Record<MenuItemId, LucideIcon> = {
   'Replay Buffer': History,
   Clips: Clapperboard,
   Highlights: Crown,
-  Lowlights: Eye,
+  Lowlights: Skull,
   Settings: SettingsIcon,
 };
 

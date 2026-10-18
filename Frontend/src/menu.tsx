@@ -70,15 +70,11 @@ export default function Menu({ selectedMenu, onSelectMenu }: MenuProps) {
     const items =
       settings.menuItems && settings.menuItems.length > 0 ? settings.menuItems : DEFAULT_MENU_ITEMS;
     // Force-show items that contain content so the user always has a way to reach their files.
-    // Lowlights additionally requires the feature flag — until they opt in, we never surface
-    // the menu item, even if they happen to have stray Lowlight content files.
     return items.filter(
       (item) =>
-        item.id === 'Settings' ||
-        (item.id === 'Lowlights' ? settings.enableLowlights && item.visible : item.visible) ||
-        menuItemHasContent(item.id, appState.content),
+        item.id === 'Settings' || item.visible || menuItemHasContent(item.id, appState.content),
     );
-  }, [settings.menuItems, appState.content, settings.enableLowlights]);
+  }, [settings.menuItems, appState.content]);
 
   const computeIndicatorPosition = () => {
     if (!visibleMenuItems.some((item) => item.id === selectedMenu)) return;
