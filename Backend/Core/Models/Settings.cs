@@ -61,6 +61,7 @@ namespace Segra.Backend.Core.Models
         private string? _pipeWireRestoreToken = null; // lets the Wayland screen-share portal skip its picker
         private bool _pendingOBSUpdate = false;
         private int _storageLimit = 100;
+        private bool _unlimitedStorage = false;
         private int? _clipStorageLimit = null;
         private int? _highlightStorageLimit = null;
         private int? _lowlightStorageLimit = null;
@@ -107,6 +108,7 @@ namespace Segra.Backend.Core.Models
         private bool _showNewBadgeOnVideos = false;
         private bool _showGameBackground = true;
         private bool _showAudioWaveformInTimeline = true;
+        private bool _showBookmarksInFullscreen = true;
         private bool _enableSeparateAudioTracks = false;
         private AudioOutputMode _audioOutputMode = AudioOutputMode.All;
         private string _videoQualityPreset = "high";
@@ -190,10 +192,12 @@ namespace Segra.Backend.Core.Models
             set
             {
                 string normalized = Shared.PathUtils.Normalize(value);
-                bool hasChanged = Instance._contentFolder != normalized;
+                bool hasChanged = _contentFolder != normalized;
 
                 _contentFolder = normalized;
-                Instance._contentFolder = normalized;
+
+                // UpdateSettings deserializes a copy; only the instance itself may apply the change
+                if (!ReferenceEquals(this, Instance)) return;
 
                 if (hasChanged || AppState.Instance.Content.Count == 0)
                 {
@@ -359,6 +363,18 @@ namespace Segra.Backend.Core.Models
             set
             {
                 _storageLimit = value;
+            }
+        }
+
+        // Turns off the main sessions/replay-buffer storage limit cleanup. The low drive space
+        // stop while recording still applies, and the optional per-type limits below still apply.
+        [JsonPropertyName("unlimitedStorage")]
+        public bool UnlimitedStorage
+        {
+            get => _unlimitedStorage;
+            set
+            {
+                _unlimitedStorage = value;
             }
         }
 
@@ -929,6 +945,19 @@ namespace Segra.Backend.Core.Models
                 if (_showAudioWaveformInTimeline != value)
                 {
                     _showAudioWaveformInTimeline = value;
+                }
+            }
+        }
+
+        [JsonPropertyName("showBookmarksInFullscreen")]
+        public bool ShowBookmarksInFullscreen
+        {
+            get => _showBookmarksInFullscreen;
+            set
+            {
+                if (_showBookmarksInFullscreen != value)
+                {
+                    _showBookmarksInFullscreen = value;
                 }
             }
         }

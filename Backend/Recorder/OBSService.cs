@@ -160,6 +160,8 @@ namespace Segra.Backend.Recorder
         // active. Both the display-capture fallback and the game capture inherit this canvas.
         private static bool _isHdrRecording = false;
         private static string? _hdrEncoderId = null;
+        // HDR encoders that failed to start (e.g. no 10-bit support). Guarded by _recorderLock.
+        private static readonly HashSet<string> _hdrStartFailedEncoders = new(StringComparer.OrdinalIgnoreCase);
 #if WINDOWS
         private static bool _isHdrDisplay = false;
 
@@ -223,6 +225,24 @@ namespace Segra.Backend.Recorder
                 SingleReader = true,
                 SingleWriter = false
             });
+
+        // The always-on buffer, or a recording in a buffer mode, has a replay to save.
+        public static bool CanSaveReplay
+        {
+            get
+            {
+                var mode = ActiveEffectiveSettings?.RecordingMode ?? Settings.Instance.RecordingMode;
+                return IsAlwaysOnBufferActive || (AppState.Instance.Recording != null && (mode == RecordingMode.Buffer || mode == RecordingMode.Hybrid));
+            }
+        }
+
+        // Saves with immediate feedback (sound + the app's shockwave); "ReplayBufferSaved" follows once OBS has written the file.
+        public static void SaveReplayWithFeedback()
+        {
+            _ = SendFrontendMessage("ReplayBufferSaveStarted", new { });
+            _ = Task.Run(SaveReplayBuffer);
+            _ = Task.Run(() => PlatformServices.Sound.Play(Properties.Resources.bookmark, Settings.Instance.SoundEffectsVolume));
+        }
 
         public static async Task<bool> SaveReplayBuffer()
         {
@@ -536,7 +556,7 @@ namespace Segra.Backend.Recorder
             {
                 try
                 {
-                    if (message.Contains("there's no UI task handler") || message.Contains("segra_track_probe") || message.Contains("CoInitializeEx failed") || message.Contains("NVAudioEffects") || message.Contains("NVVideoEffects") || message.Contains("update_hook_file"))
+                    if (message.Contains("there's no UI task handler") || message.Contains("segra_track_probe") || message.Contains("CoInitializeEx failed") || message.Contains("NVAudioEffects") || message.Contains("NVVideoEffects") || message.Contains("update_hook_file") || message.StartsWith("send_off_encoder_packet: Encoder packet timing for PTS") || (message.StartsWith("send_interleaved: Track") && message.Contains("encoder packet timing")))
                         continue;
 
                     switch ((ObsLogLevel)level)
@@ -615,7 +635,7 @@ namespace Segra.Backend.Recorder
                          message.Contains("Could not write headers for file") ||
                          message.Contains("Could not write packet for file") ||
                          message.Contains("Failed to create muxer thread") ||
-                         message.Contains("Could not save buffer because encoders paused")))
+                         message.Contains("Could not save buffer because")))
                     {
                         OnReplayMuxFailureLine(message.Trim());
                     }
@@ -705,8 +725,10 @@ namespace Segra.Backend.Recorder
                 // Initialize OBS using ObsKit.NET fluent API
 #if WINDOWS
                 string baseDir = AppContext.BaseDirectory;
-                string obsModulePath = Path.Combine(baseDir, "obs-plugins", "64bit");
-                string obsModuleDataPath = Path.Combine(baseDir, "data", "obs-plugins", "%module%");
+                // OBS 33+ bundles keep each module in core/<module>/
+                bool coreLayout = Directory.Exists(Path.Combine(baseDir, "core"));
+                string obsModulePath = coreLayout ? Path.Combine(baseDir, "core", "%module%") : Path.Combine(baseDir, "obs-plugins", "64bit");
+                string obsModuleDataPath = coreLayout ? Path.Combine(baseDir, "core", "%module%", "data") : Path.Combine(baseDir, "data", "obs-plugins", "%module%");
                 string obsDataPath = Path.Combine(baseDir, "data", "libobs");
                 Log.Information($"OBS runtime paths: data='{obsDataPath}', modules='{obsModulePath}'");
 #else
@@ -736,7 +758,8 @@ namespace Segra.Backend.Recorder
                             try
                             {
                                 // Queue the message for async processing - this is non-blocking
-                                _logChannel.Writer.TryWrite(((int)level, message));
+                                // Some libobs messages end with '\n', which adds a blank line after the log entry
+                                _logChannel.Writer.TryWrite(((int)level, message.TrimEnd()));
                             }
                             catch
                             {
@@ -1146,6 +1169,13 @@ namespace Segra.Backend.Recorder
                 return false;
             }
 
+            if (IsHeldForSleep)
+            {
+                Log.Information("The system is going to sleep or just woke up. Skipping recording.");
+                AppState.Instance.PreRecording = null;
+                return false;
+            }
+
             // Resolve global settings overlaid with any per-game overrides for this game.
             // Note: the static _activeEffectiveSettings is only published once the early-return guards
             // below have passed, so a blocked start attempt can never clobber an active recording's settings.
@@ -1178,8 +1208,8 @@ namespace Segra.Backend.Recorder
             List<StorageService.FullDrive> fullDrives = StorageService.GetFullDrives();
             if (!alwaysOn && fullDrives.Count > 0)
             {
-                string drivesText = string.Join(", ", fullDrives.Select(d => $"{d.Label} ({d.Root.TrimEnd('\\')}) is {d.UsedPercent:F1}% full"));
-                Log.Error($"Cannot start recording, drive(s) over {StorageService.DriveFullThresholdPercent:F0}% full: {drivesText}");
+                string drivesText = string.Join(", ", fullDrives.Select(d => $"{d.Label} ({d.Root.TrimEnd('\\')}) only has {d.FreeGb:F1} GB free"));
+                Log.Error($"Cannot start recording, drive(s) below {StorageService.MinimumSystemFreeSpaceBytes / StorageService.BYTES_PER_GB} GB free: {drivesText}");
                 // Stop the game detection polling loop from retrying until the user switches foreground window
                 GameDetectionService.PreventRetryRecording = true;
                 Task.Run(() => ShowModal("Not enough disk space", $"Recording cannot start because {drivesText}. Free up some space and try again.", "error"));
@@ -1235,7 +1265,11 @@ namespace Segra.Backend.Recorder
                     {
                         string userEncoderId = eff.Codec?.InternalEncoderId ?? string.Empty;
                         string? hdrEncoderId = EncoderInfo.FindHdrCapable(userEncoderId)?.Id;
-                        if (hdrEncoderId != null)
+                        if (hdrEncoderId != null && _hdrStartFailedEncoders.Contains(hdrEncoderId))
+                        {
+                            Log.Warning($"HDR encoder '{hdrEncoderId}' failed to start earlier; tone-mapping HDR to SDR.");
+                        }
+                        else if (hdrEncoderId != null)
                         {
                             _isHdrRecording = true;
                             _hdrEncoderId = hdrEncoderId;
@@ -1266,7 +1300,9 @@ namespace Segra.Backend.Recorder
             DisposeEncoders();
 
             // Configure video settings specifically for this recording/buffer
-            ResetVideoSettings(out _, customFps: (uint)eff.FrameRate, customResolution: eff.Resolution, encoderId: GetActiveEncoderId(eff));
+            var displaySize = startManually ? GetSelectedDisplaySize() : null;
+            ResetVideoSettings(out _, customFps: (uint)eff.FrameRate, customOutputWidth: displaySize?.Width, customOutputHeight: displaySize?.Height,
+                customResolution: eff.Resolution, encoderId: GetActiveEncoderId(eff));
 
             _mainScene = new Scene("Recording Scene");
             Log.Information("Created recording scene");
@@ -1396,7 +1432,9 @@ namespace Segra.Backend.Recorder
             }
             else
             {
-                videoEncoderSettings.Set("preset", "Quality");
+                // Only AMF has a preset by this name, the other encoders keep their default preset
+                if (encoderId.Contains("amf", StringComparison.OrdinalIgnoreCase))
+                    videoEncoderSettings.Set("preset", "Quality");
                 // HEVC needs the Main 10 profile for 10-bit HDR; AV1 derives bit depth from the P010 input.
                 videoEncoderSettings.Set("profile", _isHdrRecording && EncoderInfo.Get(encoderId)?.Codec == "hevc" ? "main10" : "high");
                 videoEncoderSettings.Set("use_bufsize", true);
@@ -1437,11 +1475,17 @@ namespace Segra.Backend.Recorder
 
                 ApplyNvencBFrameLimit(videoEncoderSettings, encoderId);
 
-                // Two-pass and psycho visual tuning run on CUDA, which a GPU-bound game starves until the encoder falls behind
                 if (encoderId.Contains("nvenc", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Two-pass, adaptive quantization and look-ahead add GPU work that a GPU-bound game starves until the encoder falls behind
                     videoEncoderSettings.Set("multipass", "disabled");
-                    videoEncoderSettings.Set("psycho_aq", false);
+                    videoEncoderSettings.Set("adaptive_quantization", false);
+                    videoEncoderSettings.Set("lookahead", false);
+                }
+                else if (encoderId.Contains("qsv", StringComparison.OrdinalIgnoreCase) && (eff.RateControl is "CBR" or "VBR"))
+                {
+                    // Look-ahead adds GPU work and has failed to start on some Intel GPUs; "ultra-low" is the only QSV latency that turns it off
+                    videoEncoderSettings.Set("latency", "ultra-low");
                 }
             }
 
@@ -1792,6 +1836,11 @@ namespace Segra.Backend.Recorder
                 {
                     string error = _output.LastError ?? "Unknown error";
                     Log.Error($"Failed to start recording: {error}");
+                    if (RetryWithoutHdr(() => StartRecordingCore(name, exePath, startManually, pid, cancel, alwaysOn)) is bool startedInSdr)
+                        return startedInSdr;
+
+                    // Stop the game detection polling loop from retrying until the user switches foreground window
+                    GameDetectionService.PreventRetryRecording = true;
                     Task.Run(() => ShowModal("Recording failed", "Failed to start recording. Check the log for more details.", "error"));
                     Task.Run(() => PlaySound("error"));
                     AppState.Instance.PreRecording = null;
@@ -1813,9 +1862,12 @@ namespace Segra.Backend.Recorder
                 {
                     string error = _bufferOutput.LastError ?? "Unknown error";
                     Log.Error($"Failed to start replay buffer: {error}");
+                    if (_output == null && RetryWithoutHdr(() => StartRecordingCore(name, exePath, startManually, pid, cancel, alwaysOn)) is bool bufferStartedInSdr)
+                        return bufferStartedInSdr;
                     if (alwaysOn)
                         return false;
 
+                    GameDetectionService.PreventRetryRecording = true;
                     Task.Run(() => ShowModal("Replay buffer failed", "Failed to start replay buffer. Check the log for more details.", "error"));
                     Task.Run(() => PlaySound("error"));
                     AppState.Instance.PreRecording = null;
@@ -2048,6 +2100,17 @@ namespace Segra.Backend.Recorder
                 Log.Warning($"Failed to follow the game's monitor: {ex.Message}");
             }
 #endif
+        }
+
+        private static (uint Width, uint Height)? GetSelectedDisplaySize()
+        {
+            var displays = AppState.Instance.Displays;
+            int index = ResolveSelectedMonitorIndex(warnIfNotFound: false);
+            if (displays == null || index >= displays.Count)
+                return null;
+
+            var display = displays[index];
+            return display.Width > 0 && display.Height > 0 ? ((uint)display.Width, (uint)display.Height) : null;
         }
 
         /// <summary>
@@ -2354,7 +2417,14 @@ namespace Segra.Backend.Recorder
                             : null;
                         sessionContentId = await ContentService.CreateMetadataFile(filePath, Content.ContentType.Session, session.Game, session.Bookmarks, igdbId: igdbId, audioTrackNames: session.AudioTrackNames, audioTrackTypes: session.AudioTrackTypes, gameExePath: session.ExePath, fallbackDuration: session.Duration);
                         await ContentService.CreateThumbnail(filePath, Content.ContentType.Session, sessionContentId);
-                        await ContentService.CreateWaveformFile(filePath, Content.ContentType.Session, sessionContentId);
+                        // Decoding a long session's audio takes seconds, so it doesn't hold up the finishing state
+                        var waveformWork = BackgroundWork.Begin();
+                        string? waveformId = sessionContentId;
+                        _ = Task.Run(async () =>
+                        {
+                            using (waveformWork)
+                                await ContentService.CreateWaveformFile(filePath, Content.ContentType.Session, waveformId);
+                        });
 
                         Log.Information($"Recording details:");
                         Log.Information($"Start Time: {session.StartTime}");
@@ -2416,6 +2486,31 @@ namespace Segra.Backend.Recorder
             CapturedWindowHeight = null;
         }
 
+        // Null when the failed start wasn't in HDR, otherwise whether the SDR retry started
+        private static bool? RetryWithoutHdr(Func<bool> start)
+        {
+            if (!_isHdrRecording || _hdrEncoderId == null)
+                return null;
+
+            string encoderId = _hdrEncoderId;
+            Log.Warning($"Output failed to start with HDR encoder '{encoderId}'; retrying in SDR.");
+            _hdrStartFailedEncoders.Add(encoderId);
+            DisposeRecording();
+
+            bool started = false;
+            try
+            {
+                started = start();
+                return started;
+            }
+            finally
+            {
+                // Failing in SDR as well means HDR wasn't the cause
+                if (!started)
+                    _hdrStartFailedEncoders.Remove(encoderId);
+            }
+        }
+
         /// <summary>
         /// Brings the always-on buffer in line with its setting: running while nothing records, restarted
         /// when its configuration changes. A failed buffer is only retried after the configuration
@@ -2434,7 +2529,7 @@ namespace Segra.Backend.Recorder
                 try
                 {
                     bool wanted = Settings.Instance.AlwaysOnReplayBuffer && IsInitialized && !_isExiting
-                        && !RecorderHealthService.IsRecorderLost
+                        && !RecorderHealthService.IsRecorderLost && !IsHeldForSleep
                         && AppState.Instance.Recording == null && AppState.Instance.PreRecording == null;
 
                     if (_alwaysOnBuffer != null)
@@ -2554,6 +2649,75 @@ namespace Segra.Backend.Recorder
                 s.InputDevices, s.OutputDevices, s.EnableSeparateAudioTracks,
                 s.SelectedDisplay?.DeviceId, s.ContentFolder, AppState.Instance.Displays
             });
+        }
+
+        // Recording is held around a system sleep: on wake libobs would encode every frame interval it slept through.
+        // An Environment.TickCount64 deadline, which counts time asleep, so a lost wake notice can't hold it for long.
+        private static long _sleepHoldUntil;
+        private const int SleepHoldMs = 60000;
+        // Windows waits about two seconds for a suspend notification
+        private const int SuspendStopTimeoutMs = 1500;
+        // Lets audio devices and the graphics driver come back before the always-on buffer restarts
+        private const int ResumeSettleMs = 10000;
+
+        private static bool IsHeldForSleep => Environment.TickCount64 < Volatile.Read(ref _sleepHoldUntil);
+
+        public static void OnSystemSuspend()
+        {
+            Volatile.Write(ref _sleepHoldUntil, Environment.TickCount64 + SleepHoldMs);
+            CancelPendingStart();
+            Task.Run(() => StopForSleepAsync(resumed: false)).Wait(SuspendStopTimeoutMs);
+        }
+
+        public static void OnSystemResume()
+        {
+            long hold = Environment.TickCount64 + SleepHoldMs;
+            Volatile.Write(ref _sleepHoldUntil, hold);
+            _ = Task.Run(async () =>
+            {
+                await StopForSleepAsync(resumed: true);
+                await Task.Delay(ResumeSettleMs);
+
+                // Unless the system went to sleep again meanwhile
+                if (Interlocked.CompareExchange(ref _sleepHoldUntil, 0, hold) == hold)
+                    SyncAlwaysOnBuffer();
+            });
+        }
+
+        // Force-stopped: after a sleep a normal stop first encodes every frame it skipped
+        private static async Task StopForSleepAsync(bool resumed)
+        {
+            try
+            {
+                bool recording;
+                await _recorderLock.WaitAsync();
+                try
+                {
+                    bool bufferActive = _bufferOutput?.IsActive == true;
+                    bool outputActive = _output?.IsActive == true;
+                    if (resumed && (bufferActive || outputActive))
+                        Log.Warning("The recorder ran through the sleep; force-stopping it");
+
+                    if (bufferActive)
+                        _bufferOutput!.ForceStop();
+                    if (outputActive)
+                        _output!.ForceStop();
+
+                    StopAlwaysOnBufferCore();
+                    recording = AppState.Instance.Recording != null;
+                }
+                finally
+                {
+                    _recorderLock.Release();
+                }
+
+                if (recording)
+                    await StopRecording();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to stop recording for the system sleep");
+            }
         }
 
         /// <summary>
@@ -4291,6 +4455,12 @@ namespace Segra.Backend.Recorder
                     {
                         Directory.Delete(obsPluginsPath, true);
                     }
+
+                    string corePath = Path.Combine(currentDirectory, "core");
+                    if (Directory.Exists(corePath))
+                    {
+                        Directory.Delete(corePath, true);
+                    }
                 }
 
                 try
@@ -4372,9 +4542,9 @@ namespace Segra.Backend.Recorder
             new(StringComparer.OrdinalIgnoreCase)
             {
                 // ── NVIDIA NVENC ────────────────────────────────────
-                ["jim_nvenc"] = "NVIDIA NVENC H.264",
-                ["jim_hevc_nvenc"] = "NVIDIA NVENC H.265",
-                ["jim_av1_nvenc"] = "NVIDIA NVENC AV1",
+                ["obs_nvenc_h264_tex"] = "NVIDIA NVENC H.264",
+                ["obs_nvenc_hevc_tex"] = "NVIDIA NVENC H.265",
+                ["obs_nvenc_av1_tex"] = "NVIDIA NVENC AV1",
 
                 // ── AMD AMF ────────────────────────────────────────
                 ["h264_texture_amf"] = "AMD AMF H.264",
@@ -4399,37 +4569,57 @@ namespace Segra.Backend.Recorder
                 ["ffmpeg_openh264"] = "Software OpenH264",
             };
 
+        // One entry per group; the name column is only set for encoders offered in the UI
+        private static void LogEncoderGroup(string title, List<(string Id, bool IsHardware, string? Name)> encoders, int idWidth)
+        {
+            var rows = encoders.Select(e =>
+                $"\n    {e.Id.PadRight(idWidth)}  {(e.IsHardware ? "hardware" : "software")}{(e.Name != null ? $"  {e.Name}" : "")}");
+            Log.Information("{EncoderList}", $"{title} ({encoders.Count}):{string.Concat(rows)}");
+        }
+
         private static void SetAvailableEncodersInState()
         {
-            Log.Information("Available encoders:");
-
             // Enumerate all encoder types using ObsKit.NET
             var encoderTypes = Obs.EnumerateEncoderTypes().ToList();
-            int idx = 0;
+            var videoEncoders = new List<(string Id, bool IsHardware, string? Name)>();
+            var audioEncoders = new List<(string Id, bool IsHardware, string? Name)>();
 
-            // Several of our curated encoder ids (e.g. jim_nvenc, obs_qsv11_v2) are marked
-            // deprecated/internal by libobs despite being the ones we actually use, so this
-            // must stay a per-id EncoderInfo lookup rather than EncoderInfo.GetVideoEncoders()
-            // (which filters those out). Look up once via a map instead of once per encoder -
+            // Includes internal encoders, which are enumerated and logged too. Built once since
             // EncoderInfo.Get() re-enumerates every registered encoder internally.
             var encoderInfoById = EncoderInfo.GetAll(includeInternal: true)
                 .ToDictionary(e => e.Id, StringComparer.OrdinalIgnoreCase);
 
             foreach (var encoderId in encoderTypes)
             {
+                encoderInfoById.TryGetValue(encoderId, out var info);
+
+                // Deprecated ids are aliases that libobs reroutes to a current encoder
+                if (info?.IsDeprecated == true)
+                    continue;
+
                 EncoderFriendlyNames.TryGetValue(encoderId, out var name);
                 string friendlyName = name ?? encoderId;
-                bool isHardware = encoderInfoById.TryGetValue(encoderId, out var info) && info.IsHardware;
+                bool isHardware = info?.IsHardware == true;
 
-                Log.Information($"{idx} - {friendlyName} | {encoderId} | {(isHardware ? "Hardware" : "Software")}");
+                (info?.IsAudio == true ? audioEncoders : videoEncoders).Add((encoderId, isHardware, name));
+
                 if (name != null)
                 {
                     AppState.Instance.Codecs.Add(new Codec { InternalEncoderId = encoderId, FriendlyName = friendlyName, IsHardwareEncoder = isHardware });
                 }
-                idx++;
             }
 
-            Log.Information($"Total encoders found: {idx}");
+            int idWidth = videoEncoders.Concat(audioEncoders).Select(e => e.Id.Length).DefaultIfEmpty().Max();
+            LogEncoderGroup("Video encoders", videoEncoders, idWidth);
+            LogEncoderGroup("Audio encoders", audioEncoders, idWidth);
+
+            _ = EnsureCodecAvailableAsync();
+        }
+
+        private static async Task EnsureCodecAvailableAsync()
+        {
+            // A pending migration can still rename the saved codec id
+            await MigrationService.WaitForMigrationsAsync();
 
             var codec = Settings.Instance.Codec;
             if (codec == null || !AppState.Instance.Codecs.Any(c => c.InternalEncoderId.Equals(codec.InternalEncoderId, StringComparison.OrdinalIgnoreCase)))
@@ -4477,10 +4667,10 @@ namespace Segra.Backend.Recorder
             }
             else if (encoderType == "gpu")
             {
-                // Prefer NVIDIA NVENC (jim_nvenc)
+                // Prefer NVIDIA NVENC H.264
                 selectedCodec = availableCodecs.FirstOrDefault(
                     c => c.InternalEncoderId.Equals(
-                        "jim_nvenc",
+                        "obs_nvenc_h264_tex",
                         StringComparison.OrdinalIgnoreCase
                     )
                 );

@@ -16,7 +16,9 @@ namespace Segra.Backend.Core
     internal static class SettingsService
     {
         public static readonly string SettingsFilePath = PathUtils.Normalize(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Segra", "settings.json"));
+        private static readonly string BackupFilePath = SettingsFilePath + ".bak";
         private static readonly object _saveLock = new();
+        private static string? _lastSavedJson;
 
         public static void SaveSettings(bool force = false, bool suppressLog = false)
         {
@@ -40,14 +42,41 @@ namespace Segra.Backend.Core
                     TypeInfoResolver = SettingsJsonContext.Resolver
                 });
 
+                bool unchanged;
                 lock (_saveLock)
                 {
-                    string tempPath = SettingsFilePath + ".tmp";
-                    File.WriteAllText(tempPath, json);
-                    File.Move(tempPath, SettingsFilePath, true);
+                    unchanged = json == _lastSavedJson;
+                    if (!unchanged)
+                    {
+                        string tempPath = SettingsFilePath + ".tmp";
+                        using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        using (var writer = new StreamWriter(stream))
+                        {
+                            writer.Write(json);
+                            writer.Flush();
+                            stream.Flush(true);
+                        }
+
+                        bool replaced = false;
+                        if (File.Exists(SettingsFilePath))
+                        {
+                            try
+                            {
+                                File.Replace(tempPath, SettingsFilePath, BackupFilePath);
+                                replaced = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Warning($"Could not keep a settings backup: {ex.Message}");
+                            }
+                        }
+                        if (!replaced)
+                            File.Move(tempPath, SettingsFilePath, true);
+                        _lastSavedJson = json;
+                    }
                 }
 
-                if (!suppressLog)
+                if (!unchanged && !suppressLog)
                 {
                     Log.Information($"Settings saved to {SettingsFilePath}");
                 }
@@ -71,15 +100,57 @@ namespace Segra.Backend.Core
 
         public static bool LoadSettings()
         {
+            if (File.Exists(SettingsFilePath))
+            {
+                if (TryLoadSettingsFile(SettingsFilePath))
+                    return true;
+
+                try
+                {
+                    File.Move(SettingsFilePath, SettingsFilePath + ".corrupt", true);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"Could not move the unreadable settings file aside: {ex.Message}");
+                }
+            }
+
+            if (!File.Exists(BackupFilePath))
+            {
+                Log.Information($"Settings file not found at {SettingsFilePath}. Using default settings.");
+                return false;
+            }
+
+            if (!TryLoadSettingsFile(BackupFilePath))
+                return false;
+
+            Log.Warning($"Settings restored from {BackupFilePath}");
+            _lastSavedJson = null;
+            return true;
+        }
+
+        // A lock (antivirus, a profile still syncing) must not get a good file set aside as corrupt
+        private static string ReadAllTextWithRetry(string path)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return File.ReadAllText(path);
+                }
+                catch (IOException) when (attempt < 5)
+                {
+                    Thread.Sleep(200);
+                }
+            }
+        }
+
+        private static bool TryLoadSettingsFile(string path)
+        {
             try
             {
-                if (!File.Exists(SettingsFilePath))
-                {
-                    Log.Information($"Settings file not found at {SettingsFilePath}. Using default settings.");
-                    return false;
-                }
-
-                var json = File.ReadAllText(SettingsFilePath);
+                var json = ReadAllTextWithRetry(path);
+                _lastSavedJson = json;
 
                 var options = new JsonSerializerOptions
                 {
@@ -173,7 +244,7 @@ namespace Segra.Backend.Core
 
                 Settings.Instance.RunOnStartup = PlatformServices.Startup.GetStartupStatus();
 
-                Log.Information("Settings loaded from {0}", SettingsFilePath);
+                Log.Information("Settings loaded from {0}", path);
 
                 // The file has been fully read, so mark loaded BEFORE the forced save below.
                 // Property setters during the bulk update fire background tasks (e.g. ContentFolder's
@@ -187,7 +258,8 @@ namespace Segra.Backend.Core
             }
             catch (Exception ex)
             {
-                Log.Error($"Failed to load settings: {ex.Message}");
+                Log.Error($"Failed to load settings from {path}: {ex.Message}");
+                Settings.Instance._isBulkUpdating = false;
                 return false;
             }
         }
@@ -338,6 +410,13 @@ namespace Segra.Backend.Core
             {
                 Log.Information($"ShowAudioWaveformInTimeline changed from '{settings.ShowAudioWaveformInTimeline}' to '{updatedSettings.ShowAudioWaveformInTimeline}'");
                 settings.ShowAudioWaveformInTimeline = updatedSettings.ShowAudioWaveformInTimeline;
+                hasChanges = true;
+            }
+
+            if (settings.ShowBookmarksInFullscreen != updatedSettings.ShowBookmarksInFullscreen)
+            {
+                Log.Information($"ShowBookmarksInFullscreen changed from '{settings.ShowBookmarksInFullscreen}' to '{updatedSettings.ShowBookmarksInFullscreen}'");
+                settings.ShowBookmarksInFullscreen = updatedSettings.ShowBookmarksInFullscreen;
                 hasChanges = true;
             }
 
@@ -519,13 +598,18 @@ namespace Segra.Backend.Core
                 hasChanges = true;
             }
 
+            bool rejectedFolder = false;
             if (settings.ContentFolder != updatedSettings.ContentFolder)
             {
                 Log.Information($"ContentFolder changed from '{settings.ContentFolder}' to '{updatedSettings.ContentFolder}'");
 
+                if (!IsAbsolutePath(updatedSettings.ContentFolder) || !TryCreateDirectory(updatedSettings.ContentFolder))
+                {
+                    Log.Warning($"Ignoring content folder '{updatedSettings.ContentFolder}': not an absolute path or can't be created");
+                    rejectedFolder = true;
+                }
                 // Check if the new folder would exceed storage limit
-                bool shouldProceed = await StorageWarningService.CheckContentFolderChange(updatedSettings.ContentFolder);
-                if (shouldProceed)
+                else if (await StorageWarningService.CheckContentFolderChange(updatedSettings.ContentFolder))
                 {
                     settings.ContentFolder = updatedSettings.ContentFolder;
                     hasChanges = true;
@@ -533,11 +617,22 @@ namespace Segra.Backend.Core
                 // If not proceeding, a warning modal was sent to the frontend
             }
 
+            string? previousCacheFolder = null;
             if (settings.CacheFolder != updatedSettings.CacheFolder)
             {
                 Log.Information($"CacheFolder changed from '{settings.CacheFolder}' to '{updatedSettings.CacheFolder}'");
-                settings.CacheFolder = updatedSettings.CacheFolder;
-                hasChanges = true;
+
+                if (!IsAbsolutePath(updatedSettings.CacheFolder) || !TryCreateDirectory(updatedSettings.CacheFolder))
+                {
+                    Log.Warning($"Ignoring cache folder '{updatedSettings.CacheFolder}': not an absolute path or can't be created");
+                    rejectedFolder = true;
+                }
+                else
+                {
+                    previousCacheFolder = settings.CacheFolder;
+                    settings.CacheFolder = updatedSettings.CacheFolder;
+                    hasChanges = true;
+                }
             }
 
             if (settings.RecordingMode != updatedSettings.RecordingMode)
@@ -717,6 +812,13 @@ namespace Segra.Backend.Core
                 lowlightLimitChanged = true;
             }
 
+            if (settings.UnlimitedStorage != updatedSettings.UnlimitedStorage)
+            {
+                Log.Information($"UnlimitedStorage changed from '{settings.UnlimitedStorage}' to '{updatedSettings.UnlimitedStorage}'");
+                settings.UnlimitedStorage = updatedSettings.UnlimitedStorage;
+                hasChanges = true;
+                storageLimitChanged = true;
+            }
 
             if (!settings.InputDevices.SequenceEqual(updatedSettings.InputDevices, new DeviceSettingEqualityComparer()))
             {
@@ -949,6 +1051,29 @@ namespace Segra.Backend.Core
                 // End bulk update without saving if no changes were made
                 settings._isBulkUpdating = false;
                 Log.Information("No settings changes detected");
+
+                if (rejectedFolder)
+                    await MessageService.SendSettingsToFrontend("Folder path rejected");
+            }
+
+            if (previousCacheFolder != null)
+                await MigrateCacheFolder(previousCacheFolder, settings.CacheFolder);
+        }
+
+        private static bool IsAbsolutePath(string? path) =>
+            !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path);
+
+        private static bool TryCreateDirectory(string path)
+        {
+            try
+            {
+                Directory.CreateDirectory(path);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Could not create folder '{path}': {ex.Message}");
+                return false;
             }
         }
 
@@ -1202,7 +1327,9 @@ namespace Segra.Backend.Core
                 return;
             }
 
-            if (string.Equals(oldCacheFolder.Replace("/", "\\"), newCacheFolder.Replace("/", "\\"), StringComparison.OrdinalIgnoreCase))
+            static string Canonical(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            if (string.Equals(Canonical(oldCacheFolder), Canonical(newCacheFolder),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             {
                 Log.Information("Cache folder unchanged, no migration needed");
                 return;
@@ -1212,8 +1339,8 @@ namespace Segra.Backend.Core
 
             foreach (var folderName in foldersToMigrate)
             {
-                string sourcePath = Path.Combine(oldCacheFolder.Replace("/", "\\"), folderName);
-                string destPath = Path.Combine(newCacheFolder.Replace("/", "\\"), folderName);
+                string sourcePath = Path.Combine(Canonical(oldCacheFolder), folderName);
+                string destPath = Path.Combine(Canonical(newCacheFolder), folderName);
 
                 if (!Directory.Exists(sourcePath))
                 {

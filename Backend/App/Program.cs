@@ -9,6 +9,7 @@ using System.Drawing;
 using Segra.Backend.Shared;
 using Segra.Backend.Platform;
 using Segra.Backend.Recorder;
+using Segra.Backend.Media;
 using Segra.Backend.Core.Models;
 using Segra.Backend.Windows.Storage;
 using System.Reflection;
@@ -26,9 +27,6 @@ namespace Segra.Backend.App
 #if WINDOWS
         [DllImport("user32.dll")]
         static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-        [DllImport("user32.dll")]
-        static extern bool SetProcessDPIAware();
 
         [DllImport("user32.dll")]
         static extern uint GetDpiForSystem();
@@ -86,10 +84,7 @@ namespace Segra.Backend.App
 
             PlatformServices.Initialize();
 
-#if WINDOWS
-            // Set process DPI aware to ensure we capture at physical resolution
-            SetProcessDPIAware();
-#else
+#if !WINDOWS
             // Re-exec once with LD_LIBRARY_PATH set so libobs is loadable (never returns on first launch).
             Segra.Backend.Platform.Linux.LinuxObsRuntime.ConfigureAndReexecIfNeeded();
 #endif
@@ -339,6 +334,7 @@ namespace Segra.Backend.App
                 Task.Run(AudioStreamServer.StartAsync);
 #endif
                 Task.Run(StorageService.EnsureStorageBelowLimit);
+                Task.Run(ContentMigrationService.CleanupInterruptedCopiesAsync);
 
                 // Check for updates
                 Task.Run(() => UpdateService.UpdateAppIfNecessary(forceCheck: true));
@@ -350,11 +346,39 @@ namespace Segra.Backend.App
                 Log.Information($"Starting application{(startMinimized ? " minimized" : "")}");
 
                 // Tray icon (WinForms NotifyIcon on Windows; no-op on Linux)
-                PlatformServices.Tray.Initialize(
-                    onOpen: () => _ = ShowApplicationWindow(),
-                    onResetWindowSize: ResetWindowSize,
-                    onExit: () => { Shutdown(); Environment.Exit(0); },
-                    isWindowOpen: () => Window != null && Window.WindowState != PhotinoWindowState.Minimized);
+                PlatformServices.Tray.Initialize(new TrayActions
+                {
+                    Open = () => _ = ShowApplicationWindow(),
+                    StartRecording = () =>
+                    {
+                        Log.Information("Tray: starting display recording");
+                        _ = Task.Run(() => OBSService.StartRecording(startManually: true));
+                    },
+                    StopRecording = () =>
+                    {
+                        Log.Information("Tray: stopping recording");
+                        _ = Task.Run(() => OBSService.StopRecording(userRequested: true));
+                    },
+                    SaveReplay = () =>
+                    {
+                        Log.Information("Tray: saving replay buffer");
+                        OBSService.SaveReplayWithFeedback();
+                    },
+                    ToggleAutoRecordGames = () =>
+                    {
+                        Settings.Instance.AutoRecordGames = !Settings.Instance.AutoRecordGames;
+                        Log.Information($"Tray: AutoRecordGames set to '{Settings.Instance.AutoRecordGames}'");
+                        SettingsService.SaveSettings();
+                        _ = MessageService.SendSettingsToFrontend("Auto-record games toggled from the tray");
+                    },
+                    ResetWindowSize = ResetWindowSize,
+                    Exit = ExitApplication,
+                    IsRecording = () => AppState.Instance.Recording != null || AppState.Instance.PreRecording != null,
+                    CanStartRecording = () => OBSService.IsInitialized,
+                    CanSaveReplay = () => OBSService.CanSaveReplay,
+                    IsAutoRecordGamesEnabled = () => Settings.Instance.AutoRecordGames,
+                    CanResetWindowSize = IsWindowSizeChanged
+                });
 
 #if WINDOWS
                 // Start monitoring system power state changes (sleep/wake)
@@ -419,7 +443,7 @@ namespace Segra.Backend.App
 
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.Debug()
-                .WriteTo.Debug()
+                .WriteTo.Debug(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
                 //.WriteTo.Debug(restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Warning) // Remove restricted minimum level to show all logs but increase lag while debugging
                 .WriteTo.Sink(new TrimmingFileSink(LogFilePath, maxFileSizeBytes, trimTargetBytes, LogOutputTemplate))
                 .CreateLogger();
@@ -428,6 +452,7 @@ namespace Segra.Backend.App
         private static Size? _windowSizeBeforeFullscreen;
         private static Point? _windowLocationBeforeFullscreen;
         private static bool _wasMaximizedBeforeFullscreen;
+        private static bool _isFullscreen;
         private static Point? _lastNormalLocation;
         private static Size? _lastNormalSize;
         private static CancellationTokenSource? _windowStateSaveDebounceCts;
@@ -437,32 +462,32 @@ namespace Segra.Backend.App
         {
             try
             {
-                if (Window == null) return;
+                if (Window == null || enabled == _isFullscreen) return;
 
                 if (enabled)
                 {
                     _wasMaximizedBeforeFullscreen = Window.WindowState == PhotinoWindowState.Maximized;
                     _windowSizeBeforeFullscreen = Window.Size;
                     _windowLocationBeforeFullscreen = Window.Location;
-                    Window.SetMaximized(true);
+                    _isFullscreen = true;
+                    Window.SetFullScreen(true);
                 }
                 else
                 {
+                    Window.SetFullScreen(false);
+
                     if (_wasMaximizedBeforeFullscreen)
                     {
-                        return;
+                        Window.SetMaximized(true);
                     }
                     else if (_windowSizeBeforeFullscreen.HasValue && _windowLocationBeforeFullscreen.HasValue)
                     {
                         // Was not maximized, restore size and position
-                        Window.SetMaximized(false);
                         Window.SetSize(_windowSizeBeforeFullscreen.Value);
                         Window.SetLocation(_windowLocationBeforeFullscreen.Value);
                     }
-                    else
-                    {
-                        Window.SetMaximized(false);
-                    }
+
+                    _isFullscreen = false;
                 }
             }
             catch (Exception ex)
@@ -558,6 +583,55 @@ namespace Segra.Backend.App
                 Log.Error(ex, "Failed to launch the new Segra instance; staying up");
                 return false;
             }
+        }
+
+        private static int _exiting;
+
+        // Closes the window the same way closing to tray does, so quitting feels instant, then shuts down in the background.
+        private static void ExitApplication()
+        {
+            if (Interlocked.Exchange(ref _exiting, 1) == 1)
+                return;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    if (App != null)
+                        await App.Dispatcher.InvokeAsync(CloseWindowForExit);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Could not close the window before exiting");
+                }
+
+                try
+                {
+                    Shutdown();
+                }
+                finally
+                {
+                    Environment.Exit(0);
+                }
+            });
+        }
+
+        private static void CloseWindowForExit()
+        {
+            var window = Window;
+            if (window == null)
+                return;
+
+            ReleaseWindow();
+            window.Close();
+        }
+
+        // Shared by closing to tray and exiting.
+        private static void ReleaseWindow()
+        {
+            SaveWindowState();
+            _isFullscreen = false;
+            Window = null;
         }
 
         private static void Shutdown()
@@ -660,6 +734,10 @@ namespace Segra.Backend.App
 
         private static async Task ShowApplicationWindow()
         {
+            // A relaunch during the background shutdown must not bring back the window of the exiting instance.
+            if (Volatile.Read(ref _exiting) == 1)
+                return;
+
             Log.Information("Showing application window. Window is " + (Window == null ? "null" : "not null"));
             if (Window == null)
             {
@@ -788,8 +866,6 @@ namespace Segra.Backend.App
                 })
                 .Load(appUrl!);
 
-            Log.Information("Window variable has been set");
-
             Window.SetTitle("Segra");
 
             // Track the last normal (not maximized/minimized) bounds so SaveWindowState can persist
@@ -798,7 +874,7 @@ namespace Segra.Backend.App
             // the latest position/size.
             Window.RegisterLocationChangedHandler((sender, e) =>
             {
-                if (Window != null && Window.WindowState != PhotinoWindowState.Maximized &&
+                if (Window != null && !_isFullscreen && Window.WindowState != PhotinoWindowState.Maximized &&
                     Window.WindowState != PhotinoWindowState.Minimized)
                 {
                     _lastNormalLocation = e.Location;
@@ -807,7 +883,7 @@ namespace Segra.Backend.App
             });
             Window.RegisterSizeChangedHandler((sender, e) =>
             {
-                if (Window != null && Window.WindowState != PhotinoWindowState.Maximized &&
+                if (Window != null && !_isFullscreen && Window.WindowState != PhotinoWindowState.Maximized &&
                     Window.WindowState != PhotinoWindowState.Minimized)
                 {
                     _lastNormalSize = e.Size;
@@ -823,16 +899,17 @@ namespace Segra.Backend.App
 
             Window.RegisterClosingHandler((sender, e) =>
             {
+                ReleaseWindow();
+
+                if (Volatile.Read(ref _exiting) == 1)
+                    return;
+
                 if (Settings.Instance.CloseButtonAction == CloseButtonAction.Exit)
                 {
-                    e.Cancel = true;
-                    Shutdown();
-                    Environment.Exit(0);
+                    ExitApplication();
                     return;
                 }
 
-                SaveWindowState();
-                Window = null;
                 Log.Information("Application window closing to tray");
             });
 
@@ -853,6 +930,24 @@ namespace Segra.Backend.App
             // WebKitGTK handles DPI scaling itself; use a sensible default size.
             return new Size(1280, 720);
 #endif
+        }
+
+        // Whether ResetWindowSize would change anything; the tray only offers it then.
+        private static bool IsWindowSizeChanged()
+        {
+            var window = Window;
+            if (window == null)
+            {
+                var saved = Settings.Instance.LastWindowState;
+                return saved != null && (saved.Maximized ||
+                    (saved.Width > 0 && saved.Height > 0 && new Size(saved.Width, saved.Height) != GetDefaultWindowSize()));
+            }
+
+            if (_isFullscreen || window.WindowState == PhotinoWindowState.Maximized)
+                return true;
+
+            Size? size = window.WindowState == PhotinoWindowState.Minimized ? _lastNormalSize : window.Size;
+            return size != GetDefaultWindowSize();
         }
 
         // Returns the window to its default size while keeping its position. Triggered from the tray menu.
@@ -950,9 +1045,9 @@ namespace Segra.Backend.App
 
             try
             {
-                bool maximized = Window.WindowState == PhotinoWindowState.Maximized;
-                Point location = Window.Location;
-                Size size = Window.Size;
+                bool maximized = _isFullscreen ? _wasMaximizedBeforeFullscreen : Window.WindowState == PhotinoWindowState.Maximized;
+                Point location = _isFullscreen ? _windowLocationBeforeFullscreen ?? Window.Location : Window.Location;
+                Size size = _isFullscreen ? _windowSizeBeforeFullscreen ?? Window.Size : Window.Size;
 
                 // A maximized window reports its maximized bounds, so persist the last
                 // tracked normal bounds (or the previously saved ones) instead.

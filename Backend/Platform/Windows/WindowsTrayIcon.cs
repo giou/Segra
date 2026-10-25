@@ -42,22 +42,20 @@ namespace Segra.Backend.Platform.Windows
         private WndProcDelegate? _wndProcDelegate;
         private Icon? _idleIcon;
         private Icon? _recordingIcon;
-        private Action? _onOpen;
-        private Action? _onExit;
-        private ContextMenuStrip? _menu;
+        private TrayActions? _actions;
         private readonly Lock _stateLock = new();
         private bool _recording;
         private bool _registered;
 
-        public void Initialize(Action onOpen, Action onResetWindowSize, Action onExit, Func<bool> isWindowOpen)
+        public void Initialize(TrayActions actions)
         {
-            _onOpen = onOpen;
-            _onExit = onExit;
+            _actions = actions;
 
             var trayThread = new Thread(() =>
             {
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                WindowsTrayMenu.EnableDarkMode();
 
                 _idleIcon = Properties.Resources.icon;
                 _recordingIcon = Properties.Resources.iconRecording;
@@ -66,14 +64,6 @@ namespace Segra.Backend.Platform.Windows
                 {
                     return;
                 }
-
-                _menu = new ContextMenuStrip();
-                var openItem = new ToolStripMenuItem("Open", null, (s, e) => onOpen());
-                _menu.Items.Add(openItem);
-                _menu.Items.Add("Reset window size", null, (s, e) => onResetWindowSize());
-                _menu.Items.Add(new ToolStripSeparator());
-                _menu.Items.Add("Exit", null, (s, e) => onExit());
-                _menu.Opening += (s, e) => openItem.Visible = !isWindowOpen();
 
                 AddIcon(_idleIcon);
                 if (_registered)
@@ -172,7 +162,7 @@ namespace Segra.Backend.Platform.Windows
                 switch (lParam.ToInt32())
                 {
                     case (int)WM_LBUTTONDBLCLK:
-                        _onOpen?.Invoke();
+                        _actions?.Open();
                         break;
                     case (int)WM_RBUTTONUP:
                     case (int)WM_CONTEXTMENU:
@@ -199,14 +189,35 @@ namespace Segra.Backend.Platform.Windows
 
         private void ShowMenu()
         {
-            if (_menu == null)
+            if (_actions == null || _idleIcon == null)
             {
                 return;
             }
 
-            // Required so the popup doesn't immediately dismiss itself.
-            SetForegroundWindow(_hwnd);
-            _menu.Show(Cursor.Position);
+            switch (WindowsTrayMenu.Show(_hwnd, _idleIcon, _actions))
+            {
+                case WindowsTrayMenu.Open:
+                    _actions.Open();
+                    break;
+                case WindowsTrayMenu.StartRecording:
+                    _actions.StartRecording();
+                    break;
+                case WindowsTrayMenu.StopRecording:
+                    _actions.StopRecording();
+                    break;
+                case WindowsTrayMenu.SaveReplay:
+                    _actions.SaveReplay();
+                    break;
+                case WindowsTrayMenu.ToggleAutoRecordGames:
+                    _actions.ToggleAutoRecordGames();
+                    break;
+                case WindowsTrayMenu.ResetWindowSize:
+                    _actions.ResetWindowSize();
+                    break;
+                case WindowsTrayMenu.Quit:
+                    _actions.Exit();
+                    break;
+            }
         }
 
         // --- P/Invoke ---
@@ -287,9 +298,6 @@ namespace Segra.Backend.Platform.Windows
 
         [DllImport("user32.dll")]
         private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("user32.dll")]
-        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr GetModuleHandle(string? name);

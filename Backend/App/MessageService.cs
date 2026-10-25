@@ -48,6 +48,7 @@ namespace Segra.Backend.App
             "pong",
             "RecordingPreviewState",
             "RecordingPreviewFrame",
+            "WaveformCreated",
             "MigrationStatus"
         };
 
@@ -288,6 +289,10 @@ namespace Segra.Backend.App
                             break;
                         case "NewConnection":
                             Log.Information("NewConnection command received.");
+
+                            // Sent over Photino's channel when the socket opens, so it can arrive before the socket is registered
+                            await WaitForConnectionAsync(ConnectGraceMs);
+
                             // A bulk update (first-run preset apply, content reload, migration)
                             // suppresses state/settings pushes; wait for it to finish so this
                             // sync isn't silently dropped, leaving the UI stale until a refresh.
@@ -308,7 +313,9 @@ namespace Segra.Backend.App
                                 });
                             }
 
-                            await SendGameList();
+                            // Empty until games.json has loaded, which sends the list itself
+                            if (GameUtils.GetGameList().Count > 0)
+                                await SendGameList();
 
                             // canSelfUpdate: false on Linux/Flatpak, where the package manager owns updates.
                             // Informational version, not GetName().Version: it keeps the -beta.N suffix,
@@ -381,6 +388,9 @@ namespace Segra.Backend.App
                         case "MigrateContent":
                             _ = Task.Run(ContentMigrationService.HandleMigrateContent);
                             Log.Information("MigrateContent command received.");
+                            break;
+                        case "CancelContentMigration":
+                            ContentMigrationService.Cancel();
                             break;
                         case "StorageWarningConfirm":
                             root.TryGetProperty("Parameters", out JsonElement storageWarningParameterElement);
@@ -619,7 +629,6 @@ namespace Segra.Backend.App
             {
                 if (ResentOnConnect.Contains(method))
                 {
-                    Log.Debug($"Skipped '{method}' message: no frontend connected, it is resent on the next connection");
                     return;
                 }
 
