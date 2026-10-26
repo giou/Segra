@@ -207,9 +207,10 @@ namespace Segra.Backend.App
 
                 Task<string> frontendServer = IsVSCodeDebug ? Task.FromResult(string.Empty) : Task.Run(FrontendServer.Start);
 
-                // Version-stamped URL: WebKitGTK's disk cache persists across app updates and the
-                // static server sends no cache headers, so a bare /index.html can keep rendering
-                // the previous build's frontend until a manual refresh.
+                // Version + build-stamped URL: the webview disk cache persists across app
+                // updates, and a bare /index.html can keep rendering the previous build's
+                // frontend until a manual refresh. The embedded index.html fingerprint
+                // changes on every frontend rebuild, even for local builds with one version.
                 string? appVersion = Assembly.GetExecutingAssembly()
                     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
 
@@ -396,7 +397,7 @@ namespace Segra.Backend.App
                 stateInit.ContinueWith(_ => OBSService.InitializeAsync(), TaskScheduler.Default);
 #endif
 
-                appUrl = IsDebugMode ? "http://localhost:2882" : $"{frontendServer.Result}/index.html?v={Uri.EscapeDataString(appVersion ?? "0")}";
+                appUrl = IsDebugMode ? "http://localhost:2882" : $"{frontendServer.Result}/index.html?v={Uri.EscapeDataString(appVersion ?? "0")}&h={FrontendServer.CacheKey}";
                 Log.Information("Serving React app at {AppUrl}", appUrl);
 
                 // The message loop outlives every window, so closing to tray can destroy the

@@ -5,6 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ---------------------------------------------------------------------------
+# Version stamp. A local publish has no Velopack metadata, so UpdateService
+# falls back to the assembly version. Stamp it with the nearest release tag so
+# the OBS compatibility filter accepts current OBS bundles (OBS 33 needs
+# Segra >= 1.9.6-beta.1). Override with SEGRA_VERSION=1.2.3-beta.4.
+# ---------------------------------------------------------------------------
+VERSION="${SEGRA_VERSION:-}"
+if [[ -z "$VERSION" ]]; then
+    VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+fi
+VERSION="${VERSION:-1.0.0}"
+
+# ---------------------------------------------------------------------------
 # Target selection (Up/Down arrows, Enter to confirm).
 # Runs in git-bash on Windows and in bash on Linux.
 # Set SEGRA_BUILD_TARGET=windows|linux to skip the menu (for CI/non-interactive runs).
@@ -68,13 +80,14 @@ rm -rf wwwroot
 mkdir wwwroot
 cp -r Frontend/dist/* wwwroot/
 
-echo "=== Publishing Backend ==="
+echo "=== Publishing Backend (version $VERSION) ==="
 rm -rf publish
 
 if [[ $selected -eq 0 ]]; then
     # -------- Windows --------
     dotnet publish Segra.csproj -c Release --self-contained \
-        -r win-x64 -f net10.0-windows10.0.19041.0 -o publish
+        -r win-x64 -f net10.0-windows10.0.19041.0 -o publish \
+        -p:Version="$VERSION"
 
     echo ""
     echo "=== Done! ==="
@@ -87,7 +100,8 @@ else
     # (System.Management -> System.CodeDom) never enter the graph (they don't resolve on a clean Linux
     # host, and aren't needed for the Linux build).
     dotnet publish Segra.csproj -c Release --self-contained \
-        -r linux-x64 -f net10.0 -p:TargetFrameworks=net10.0 -o publish
+        -r linux-x64 -f net10.0 -p:TargetFrameworks=net10.0 -o publish \
+        -p:Version="$VERSION"
 
     # The AppImage runs from a read-only mount. The frontend is embedded, but ASP.NET (PhotinoServer)
     # creates its webroot at startup if missing, which throws on the read-only mount. Ship the dir so it

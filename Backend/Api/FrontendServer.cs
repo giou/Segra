@@ -2,6 +2,7 @@ using Serilog;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Cryptography;
 using Microsoft.Extensions.FileProviders;
 
 namespace Segra.Backend.Api
@@ -28,6 +29,32 @@ namespace Segra.Backend.Api
         };
 
         private static readonly IFileProvider Files = new ManifestEmbeddedFileProvider(Assembly.GetExecutingAssembly(), "Resources/wwwroot");
+
+        private static string? _cacheKey;
+
+        // Fingerprint of the embedded index.html, which in turn names the hashed
+        // JS/CSS bundles. Appended to the webview URL so a rebuild gets a fresh
+        // URL even when the app version is unchanged.
+        public static string CacheKey => _cacheKey ??= ComputeCacheKey();
+
+        private static string ComputeCacheKey()
+        {
+            try
+            {
+                var index = Files.GetFileInfo("/index.html");
+                if (!index.Exists)
+                    return "0";
+
+                using var stream = index.CreateReadStream();
+                using var sha = SHA256.Create();
+                return Convert.ToHexString(sha.ComputeHash(stream)).ToLowerInvariant()[..12];
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not compute the frontend cache key");
+                return "0";
+            }
+        }
 
         // Listens on the first free port from StartPort and returns the base url
         public static string Start()
@@ -106,6 +133,14 @@ namespace Segra.Backend.Api
                 {
                     response.StatusCode = (int)HttpStatusCode.NotFound;
                     return;
+                }
+
+                // index.html names the hashed bundles, so it must never be reused from
+                // the webview cache. The hashed assets themselves can stay cached.
+                if (path.EndsWith("index.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    response.Headers[HttpResponseHeader.CacheControl] = "no-store, no-cache, must-revalidate";
+                    response.Headers[HttpResponseHeader.Pragma] = "no-cache";
                 }
 
                 // Lets the webview revalidate its cached copy with a 304 instead of downloading it again
