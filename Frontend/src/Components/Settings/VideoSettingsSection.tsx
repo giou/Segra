@@ -148,6 +148,13 @@ export default function VideoSettingsSection({
     </div>
   );
 
+  const matchingCodecs = appState.codecs.filter((codec) =>
+    settings.encoder === 'gpu' ? codec.isHardwareEncoder : !codec.isHardwareEncoder,
+  );
+  // Never leave the dropdown empty when the backend has codecs but none match the
+  // selected encoder type (e.g. a stale fallback to x264 while GPU is selected).
+  const codecOptions = matchingCodecs.length > 0 ? matchingCodecs : appState.codecs;
+
   return (
     <div className="p-4 bg-base-300 rounded-lg shadow-md border border-base-400">
       <div className="flex items-center gap-2 mb-4">
@@ -499,12 +506,7 @@ export default function VideoSettingsSection({
                   <span className="label-text text-base-content">Codec</span>
                 </label>
                 <DropdownSelect
-                  items={appState.codecs
-                    .filter((codec) =>
-                      settings.encoder === 'gpu'
-                        ? codec.isHardwareEncoder
-                        : !codec.isHardwareEncoder,
-                    )
+                  items={[...codecOptions]
                     .sort((a, b) => {
                       const priorityOrder = ['nvenc', 'amf', 'qsv', 'obs_x264'];
                       const rank = (id: string) => {

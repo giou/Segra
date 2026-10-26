@@ -38,12 +38,18 @@ namespace Segra.Backend.Recorder
             public Dictionary<string, CodecCaps> Codecs { get; set; } = new();
         }
 
-        // Maps OBS NVENC encoder ids to the codec section names emitted by obs-nvenc-test
+        // Maps OBS NVENC encoder ids to the codec section names emitted by obs-nvenc-test.
+        // The jim_* ids are what OBS 30.1.1 registers; newer bundles use obs_nvenc_*_tex.
         private static readonly Dictionary<string, string> EncoderIdToCodec = new(StringComparer.OrdinalIgnoreCase)
         {
             ["obs_nvenc_h264_tex"] = "h264",
             ["obs_nvenc_hevc_tex"] = "hevc",
             ["obs_nvenc_av1_tex"] = "av1",
+            ["jim_nvenc"] = "h264",
+            ["jim_hevc_nvenc"] = "hevc",
+            ["jim_av1_nvenc"] = "av1",
+            ["ffmpeg_nvenc"] = "h264",
+            ["ffmpeg_hevc_nvenc"] = "hevc",
         };
 
         private static readonly object _lock = new();

@@ -4545,6 +4545,11 @@ namespace Segra.Backend.Recorder
                 ["obs_nvenc_h264_tex"] = "NVIDIA NVENC H.264",
                 ["obs_nvenc_hevc_tex"] = "NVIDIA NVENC H.265",
                 ["obs_nvenc_av1_tex"] = "NVIDIA NVENC AV1",
+                // OBS 30.1.1 only registers the legacy ids. Newer bundles register the
+                // obs_nvenc_*_tex ids above, and the legacy ones are aliases.
+                ["jim_nvenc"] = "NVIDIA NVENC H.264",
+                ["jim_hevc_nvenc"] = "NVIDIA NVENC H.265",
+                ["jim_av1_nvenc"] = "NVIDIA NVENC AV1",
 
                 // ── AMD AMF ────────────────────────────────────────
                 ["h264_texture_amf"] = "AMD AMF H.264",
@@ -4569,6 +4574,17 @@ namespace Segra.Backend.Recorder
                 ["ffmpeg_openh264"] = "Software OpenH264",
             };
 
+        // Old and new ids for the same NVENC encoder. OBS 30.1.1 registers only the legacy
+        // ids; newer bundles register the current ids and expose the legacy ones as
+        // deprecated aliases. Segra resolves between them so a saved codec keeps working
+        // after an OBS bundle upgrade or downgrade.
+        private static readonly (string Legacy, string Current)[] NvencAliasPairs =
+        [
+            ("jim_nvenc", "obs_nvenc_h264_tex"),
+            ("jim_hevc_nvenc", "obs_nvenc_hevc_tex"),
+            ("jim_av1_nvenc", "obs_nvenc_av1_tex"),
+        ];
+
         // One entry per group; the name column is only set for encoders offered in the UI
         private static void LogEncoderGroup(string title, List<(string Id, bool IsHardware, string? Name)> encoders, int idWidth)
         {
@@ -4588,14 +4604,24 @@ namespace Segra.Backend.Recorder
             // EncoderInfo.Get() re-enumerates every registered encoder internally.
             var encoderInfoById = EncoderInfo.GetAll(includeInternal: true)
                 .ToDictionary(e => e.Id, StringComparer.OrdinalIgnoreCase);
+            var availableIds = encoderTypes.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             foreach (var encoderId in encoderTypes)
             {
                 encoderInfoById.TryGetValue(encoderId, out var info);
 
-                // Deprecated ids are aliases that libobs reroutes to a current encoder
-                if (info?.IsDeprecated == true)
+                string? currentNvencId = GetCurrentNvencId(encoderId);
+                if (currentNvencId != null)
+                {
+                    // Prefer the non-deprecated id when the bundle registers both.
+                    if (availableIds.Contains(currentNvencId))
+                        continue;
+                }
+                else if (info?.IsDeprecated == true)
+                {
+                    // Deprecated ids are aliases that libobs reroutes to a current encoder
                     continue;
+                }
 
                 EncoderFriendlyNames.TryGetValue(encoderId, out var name);
                 string friendlyName = name ?? encoderId;
@@ -4621,10 +4647,45 @@ namespace Segra.Backend.Recorder
             // A pending migration can still rename the saved codec id
             await MigrationService.WaitForMigrationsAsync();
 
+            var availableCodecs = AppState.Instance.Codecs;
             var codec = Settings.Instance.Codec;
-            if (codec == null || !AppState.Instance.Codecs.Any(c => c.InternalEncoderId.Equals(codec.InternalEncoderId, StringComparison.OrdinalIgnoreCase)))
+            bool wantsHardware = Settings.Instance.Encoder == "gpu";
+            bool hasRequestedType = availableCodecs.Any(c => c.IsHardwareEncoder == wantsHardware);
+            bool isAvailable = codec != null &&
+                availableCodecs.Any(c => c.InternalEncoderId.Equals(codec.InternalEncoderId, StringComparison.OrdinalIgnoreCase));
+
+            // A saved NVENC id from another OBS bundle is still usable through its alias.
+            if (codec != null && !isAvailable)
             {
-                Settings.Instance.Codec = SelectDefaultCodec(Settings.Instance.Encoder, AppState.Instance.Codecs);
+                Codec? alias = FindNvencAlias(codec.InternalEncoderId, availableCodecs);
+                if (alias != null)
+                {
+                    Log.Information($"Codec '{codec.FriendlyName}' ({codec.InternalEncoderId}) is not registered in this OBS bundle, using '{alias.FriendlyName}' ({alias.InternalEncoderId})");
+                    Settings.Instance.Codec = alias;
+                    SettingsService.SaveSettings();
+                    _ = MessageService.SendSettingsToFrontend("Codec alias resolved");
+                    return;
+                }
+            }
+
+            // A software fallback can be left in place while the encoder is set to GPU (or
+            // vice versa), which would leave the codec dropdown empty in Settings.
+            if (codec != null && isAvailable && hasRequestedType && codec.IsHardwareEncoder != wantsHardware)
+            {
+                Codec? replacement = SelectDefaultCodec(Settings.Instance.Encoder, availableCodecs);
+                if (replacement != null)
+                {
+                    Log.Information($"Codec '{codec.FriendlyName}' does not match the selected {Settings.Instance.Encoder} encoder, switched to '{replacement.FriendlyName}'");
+                    Settings.Instance.Codec = replacement;
+                    SettingsService.SaveSettings();
+                    _ = MessageService.SendSettingsToFrontend("Codec type corrected");
+                    return;
+                }
+            }
+
+            if (codec == null || !isAvailable)
+            {
+                Settings.Instance.Codec = SelectDefaultCodec(Settings.Instance.Encoder, availableCodecs);
                 if (codec != null)
                 {
                     Log.Information($"Codec '{codec.FriendlyName}' is no longer available, switched to '{Settings.Instance.Codec?.FriendlyName}'");
@@ -4636,6 +4697,35 @@ namespace Segra.Backend.Recorder
                     _ = MessageService.SendSettingsToFrontend("Codec fallback");
                 }
             }
+        }
+
+        private static string? GetCurrentNvencId(string encoderId)
+        {
+            foreach (var (legacy, current) in NvencAliasPairs)
+            {
+                if (legacy.Equals(encoderId, StringComparison.OrdinalIgnoreCase))
+                    return current;
+            }
+            return null;
+        }
+
+        private static Codec? FindNvencAlias(string encoderId, List<Codec> availableCodecs)
+        {
+            foreach (var (legacy, current) in NvencAliasPairs)
+            {
+                string? equivalentId =
+                    encoderId.Equals(legacy, StringComparison.OrdinalIgnoreCase) ? current :
+                    encoderId.Equals(current, StringComparison.OrdinalIgnoreCase) ? legacy :
+                    null;
+                if (equivalentId == null)
+                    continue;
+
+                Codec? equivalent = availableCodecs.FirstOrDefault(c =>
+                    c.InternalEncoderId.Equals(equivalentId, StringComparison.OrdinalIgnoreCase));
+                if (equivalent != null)
+                    return equivalent;
+            }
+            return null;
         }
 
         public static Codec? SelectDefaultCodec(string encoderType, List<Codec> availableCodecs)
@@ -4667,12 +4757,10 @@ namespace Segra.Backend.Recorder
             }
             else if (encoderType == "gpu")
             {
-                // Prefer NVIDIA NVENC H.264
+                // Prefer NVIDIA NVENC H.264 (current or legacy OBS 30.1.1 id)
                 selectedCodec = availableCodecs.FirstOrDefault(
-                    c => c.InternalEncoderId.Equals(
-                        "obs_nvenc_h264_tex",
-                        StringComparison.OrdinalIgnoreCase
-                    )
+                    c => c.InternalEncoderId.Equals("obs_nvenc_h264_tex", StringComparison.OrdinalIgnoreCase) ||
+                         c.InternalEncoderId.Equals("jim_nvenc", StringComparison.OrdinalIgnoreCase)
                 );
 
                 // If not found, try AMD AMF H.264
